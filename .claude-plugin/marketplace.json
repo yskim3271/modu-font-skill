@@ -1,0 +1,18 @@
+{
+  "name": "modu-font-skill",
+  "owner": { "name": "yskim3271" },
+  "metadata": {
+    "description": "Turn the lettering style in one reference image into a Korean, Japanese and Latin TrueType font.",
+    "version": "0.5.0"
+  },
+  "plugins": [
+    {
+      "name": "modu-font",
+      "source": "./",
+      "description": "Agent skill: an image model writes the characters cell by cell in the style of one reference image; the skill cuts, checks, traces and builds Regular and Bold TTFs (Korean, Japanese, Latin).",
+      "version": "0.5.0",
+      "strict": false,
+      "skills": ["./skills/modu-font"]
+    }
+  ]
+}
