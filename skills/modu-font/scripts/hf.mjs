@@ -70,6 +70,7 @@ const DRAFT_LINES_JA = ["ねえ、これ大変なことになった", "マジで
 
 async function cmdInit() {
   if (existsSync(P(dir, "font.json")) && !opt.force) die(`${P(dir, "font.json")} 가 이미 있다(--force 로 덮어쓰기)`);
+  await loadSharp(); // sharp 가 없으면 아무것도 쓰기 전에 멈춘다(반쪽 작업 폴더가 남지 않게)
   // 견본을 먼저 확인한다 — 실패하면 아무것도 쓰지 않는다(반쪽 작업 폴더가 남지 않게)
   let sampleMeta = null;
   if (opt.sample) {

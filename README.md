@@ -65,7 +65,7 @@ Requirements: Node 18.17+ and Python 3.
 
 **By hand**: copy `skills/modu-font` to `~/.claude/skills/modu-font` (Claude Code) or `~/.agents/skills/modu-font` (Codex).
 
-Then, once, inside the skill folder:
+Then, once, inside the skill folder (for the plugin it is `~/.claude/plugins/cache/modu-font-skill/modu-font/<version>/skills/modu-font`; if you skip this, the skill stops with a message and your agent can run it there after asking you):
 ```sh
 npm install                      # sharp
 pip install -r requirements.txt  # fontTools

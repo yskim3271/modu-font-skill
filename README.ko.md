@@ -65,7 +65,7 @@ GPT Image 2.6 · 2K 실측, 장당 약 $0.42:
 
 **손으로**: `skills/modu-font` 폴더를 `~/.claude/skills/modu-font`(Claude Code) 또는 `~/.agents/skills/modu-font`(Codex)에 복사한다.
 
-그다음 스킬 폴더에서 한 번:
+그다음 스킬 폴더에서 한 번(플러그인이면 `~/.claude/plugins/cache/modu-font-skill/modu-font/<버전>/skills/modu-font`. 건너뛰면 스킬이 안내와 함께 멈추고, 에이전트가 물어본 뒤 그 자리에서 돌려 준다):
 ```sh
 npm install                      # sharp
 pip install -r requirements.txt  # fontTools

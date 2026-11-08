@@ -66,7 +66,7 @@ GPT Image 2.6・2K の実測で1シート約 $0.42:
 
 **手動**: `skills/modu-font` フォルダーを `~/.claude/skills/modu-font`(Claude Code)または `~/.agents/skills/modu-font`(Codex)にコピーします。
 
-そのあとスキルフォルダーで一度だけ:
+そのあとスキルフォルダーで一度だけ(プラグインの場合は `~/.claude/plugins/cache/modu-font-skill/modu-font/<バージョン>/skills/modu-font`。省くとスキルが案内を出して止まり、エージェントが確認してからその場で実行します):
 ```sh
 npm install                      # sharp
 pip install -r requirements.txt  # fontTools
