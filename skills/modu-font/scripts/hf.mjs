@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 // 모두의 폰트 스킬(modu-font) 명령 하나: node scripts/hf.mjs <명령> <작업 폴더> [옵션]
-//   init · latin · drafts · pick · grid · plan · jobs · status · estimate · approve · check · spend · openai · cut · retry · review · redo · compare · preview · glyphs · bold
+//   init · style · latin · drafts · pick · grid · plan · jobs · status · estimate · approve · check · spend · openai · cut · retry · review · redo · compare · preview · glyphs · bold
 // 돈이 드는 명령은 openai 하나뿐이고, 사용자의 승인 기록(ledger.json — approve)이 있어야 돈다. 금액 한도는 없다(지시서 11). 에이전트가 내장 도구·MCP 로 그릴 때도 check → spend 로 같은 장부에 적는다.
 // 격자: 한국어 모드의 본문 장 · 부호 장 · 다시 쓰기 장은 그 폰트의 격자 N×N(font.json grid — 견본을 재서 14 또는 12, 첫 장이 실패하면 낮춘다). 영문 장과 일본어 모드는 6×6 그대로.
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import {
-  GRIDS, GRID_BOUND, KANA, LATIN, LATIN_GUIDE, P, SKILL, attemptOf, canSpend, config, die, gridOfFont, gridOfSheet, inboxFile, isKanji, isLatin, isLatinSheet, isMainSheet, jisKanji, jobKey, latinSheets, ledger, ledgerFile, loadSharp,
+  GRIDS, GRID_BOUND, KANA, KINDS, LATIN, LATIN_GUIDE, P, SKILL, kindOf, attemptOf, canSpend, config, die, gridOfFont, gridOfSheet, inboxFile, isKanji, isLatin, isLatinSheet, isMainSheet, jisKanji, jobKey, latinSheets, ledger, ledgerFile, loadSharp,
   orderedHangul, rcParse, rejectedDir, rejectedLog, scriptOf, prompt, readJson, recordSpend, sheetsOf, sheetsUsed, spentUsd, writeJson,
 } from "./lib.mjs";
 import { measureSample, pickGrid } from "./pickgrid.mjs";
@@ -21,7 +21,7 @@ for (let i = 0; i < rest.length; i++) {
   else pos.push(rest[i]);
 }
 const HELP = () => readFileSync(path.join(SKILL, "references", "commands.md"), "utf8");
-const KNOWN = "init latin drafts pick grid plan jobs status estimate approve check spend openai cut retry review redo compare preview glyphs bold".split(" ");
+const KNOWN = "init style latin drafts pick grid plan jobs status estimate approve check spend openai cut retry review redo compare preview glyphs bold".split(" ");
 if (cmd === "help" || cmd === "--help" || cmd === "-h") { console.log(HELP()); process.exit(0); }
 if (!cmd) { console.log(HELP()); process.exit(1); }
 if (!KNOWN.includes(cmd)) die(`모르는 명령: ${cmd} — 명령 목록은 node scripts/hf.mjs help`);
@@ -71,11 +71,32 @@ const DRAFT_STYLES = [
   ["4", "small sharp mechanical-pencil handwriting: thin grey-black strokes, compact angular letters"],
 ];
 const DRAFT_LINES = ["야, 이거 큰일 났다", "ㅋㅋㅋ 진짜?? 다 매진?", "아키바까지 가야 되나…", "진짜 엄청 달렸어!"];
+// 활자 시안(지시서 14 — drafts --set print): 명조 둘 · 고딕 둘. 활자를 원하는 사용자는 먼저 명조와 고딕 사이에서 갈리므로 한 장에 두 갈래를 다 보인다.
+//   명조 둘은 지휘 세션이 직접 써서 잘 나온 시안(work/jrpg-myeongjo — 고전 책 명조 · 현대 명조)을 바탕으로 했다.
+const DRAFT_STYLES_PRINT = [
+  ["1", "classic book Myeongjo (Batang) serif type: thin horizontals and thicker verticals, small sharp triangular serifs, like the text of a printed novel"],
+  ["2", "modern Myeongjo serif type: lower stroke contrast, crisp and clear, small neat serifs, easy to read in long text"],
+  ["3", "clean modern Gothic (Dotum) sans-serif type: even stroke weight, no serifs, open shapes, like screen and interface text"],
+  ["4", "bold headline Gothic sans-serif type: heavy even strokes, square solid shapes, no serifs, like a poster or game title"],
+];
+// 활자 시안 문장 — 받침이 다양하다(ㄺ ㄼ ㅆ ㄹ ㅁ ㅇ …). 지휘 세션의 시안에서 네 칸 모두 틀림 없이 나온 문장
+const DRAFT_LINES_PRINT = ["크리스털의 빛이 꺼져 간다", "붉은 달 아래, 늑대가 울었다", "흙과 바람이 남긴 낡은 검", "왕국의 기사여, 일어나라!"];
+// drafts --style "<설명>": 그 설명을 네 갈래로 변주한다(hand · print 같은 규칙)
+const draftVariants = (desc) => [
+  ["1", `${desc} — exactly as described`],
+  ["2", `${desc} — a lighter version: thinner strokes, more open shapes`],
+  ["3", `${desc} — a heavier version: bolder, thicker strokes`],
+  ["4", `${desc} — a narrower version: compact, more angular shapes`],
+];
 // 일본어 견본 문장 — 한국어 견본과 같은 내용(같은 사람이 같은 말을 일본어로 쓴 것처럼). 한자 大変·全部·売·切·秋葉原·行·本当·走 가 들어 있다
 const DRAFT_LINES_JA = ["ねえ、これ大変なことになった", "マジで？？ 全部売り切れ？", "秋葉原まで行かなきゃダメかな…", "本当にめっちゃ走ったよ！"];
 
 async function cmdInit() {
   if (existsSync(P(dir, "font.json")) && !opt.force) die(`${P(dir, "font.json")} 가 이미 있다(--force 로 덮어쓰기)`);
+  // 글씨 종류(지시서 14): --kind hand(손글씨, 기본) | print(활자)
+  const kind = opt.kind == null ? "hand" : String(opt.kind);
+  if (!KINDS.includes(kind)) die(`--kind 는 hand(손글씨) 또는 print(활자) (받은 값: ${opt.kind === true ? "없음" : opt.kind})`);
+  const pr = kind === "print";
   await loadSharp(); // sharp 가 없으면 아무것도 쓰기 전에 멈춘다(반쪽 작업 폴더가 남지 않게)
   // 견본을 먼저 확인한다 — 실패하면 아무것도 쓰지 않는다(반쪽 작업 폴더가 남지 않게)
   let sampleMeta = null;
@@ -120,12 +141,14 @@ async function cmdInit() {
     if (fb && !readJson(fb)?.glyphs?.length) die(`--base-bold 가 굵은 글자 그림 목록(glyphs-bold.json)이 아니다: ${fb}`);
     base = { glyphs: f, ...(fb ? { bold: fb } : {}) };
   }
+  const famEn = opt["family-en"] ?? (pr ? "My Type" : "My Hand");
   const cfg = {
-    family_en: opt["family-en"] ?? "My Hand",
-    ...(script === "ja" ? { script, family_ja: opt["family-ja"] ?? "わたしの手書き", kana: opt.kana !== "no", kanji_file: "chars-kanji.txt" } : { family_ko: opt["family-ko"] ?? "내 손글씨" }),
-    ps: (opt["family-en"] ?? "My Hand").replace(/[^A-Za-z]/g, "") || "MyHand",
+    family_en: famEn,
+    ...(script === "ja" ? { script, family_ja: opt["family-ja"] ?? (pr ? "わたしの書体" : "わたしの手書き"), kana: opt.kana !== "no", kanji_file: "chars-kanji.txt" } : { family_ko: opt["family-ko"] ?? (pr ? "내 글꼴" : "내 손글씨") }),
+    ps: famEn.replace(/[^A-Za-z]/g, "") || (pr ? "MyType" : "MyHand"),
     version: "1.000",
-    style_text: opt.style ?? "everyday handwriting with a thin black 0.5 mm gel pen",
+    kind,
+    style_text: opt.style ?? (pr ? "a clean modern printed typeface with even strokes" : "everyday handwriting with a thin black 0.5 mm gel pen"),
     count: Number(opt.count ?? (script === "ja" ? kanji.length : 2350)), // 일본어: 한자 수(가나·부호는 따로)
     price_usd: Number(opt.price ?? 0.42),
     openai: { model: "gpt-image-2", size: "2048x2048", quality: "high" },
@@ -154,9 +177,29 @@ async function cmdInit() {
   if (!existsSync(P(dir, "errors.json"))) writeJson(P(dir, "errors.json"), {});
   if (!existsSync(ledgerFile(dir))) writeJson(ledgerFile(dir), ledger(dir));
   planSheets(cfg);
-  console.log(`ok ${dir}\n- 설정 font.json (${script === "ja" ? "일본어 · " : ""}이름 ${cfg.family_ja ?? cfg.family_ko} / ${cfg.family_en}, 글씨 설명 "${cfg.style_text}")`);
-  console.log(opt.sample ? "- 손글씨 견본 style/sample.png" : "- 손글씨 견본 없음 → drafts 로 시안을 그리거나 style/sample.png 를 넣는다");
+  console.log(`ok ${dir}\n- 설정 font.json (${script === "ja" ? "일본어 · " : ""}이름 ${cfg.family_ja ?? cfg.family_ko} / ${cfg.family_en}, 글씨 종류 ${kind === "print" ? "print(활자)" : "hand(손글씨)"}, 글씨 설명 "${cfg.style_text}")`);
+  console.log(opt.sample ? "- 견본 style/sample.png" : "- 견본 없음 → drafts 로 시안을 그리거나 style/sample.png 를 넣는다");
   if (cfg.grid) console.log(gridLine(cfg));
+}
+
+// ---- 글씨 종류 · 설명 바꾸기(지시서 14): style <dir> [--kind hand|print] [--style "<영어 설명>"]
+//   init 을 다시 부르지 않고 font.json 의 kind · style_text 만 바꾼다. 옵션이 없으면 지금 값을 보여 준다.
+//   바꾼 뒤 jobs 를 다시 돌리면 아직 안 받은 장의 프롬프트가 새 문구가 된다. 이미 받은 장은 옛 문구로 그려졌다 — 알린다.
+async function cmdStyle() {
+  const cfg = config(dir), before = { kind: kindOf(cfg), style: cfg.style_text };
+  if (opt.kind != null && !KINDS.includes(String(opt.kind))) die(`--kind 는 hand(손글씨) 또는 print(활자) (받은 값: ${opt.kind === true ? "없음" : opt.kind})`);
+  if (opt.style === true) die('--style 다음에 영어 설명이 필요하다(예: --style "modern Myeongjo serif type …")');
+  if (opt.kind == null && opt.style == null) {
+    console.log(`글씨 종류 ${before.kind === "print" ? "print(활자)" : "hand(손글씨)"}${cfg.kind ? "" : " — font.json 에 kind 가 없다(옛 폴더 → hand)"}\n글씨 설명 "${before.style}"\n바꾸려면 style <dir> --kind hand|print [--style "<영어 설명>"]`);
+    return;
+  }
+  if (opt.kind != null) cfg.kind = String(opt.kind);
+  if (opt.style != null) cfg.style_text = String(opt.style);
+  writeJson(P(dir, "font.json"), cfg);
+  const changed = [before.kind !== kindOf(cfg) ? `종류 ${before.kind} → ${kindOf(cfg)}` : null, before.style !== cfg.style_text ? `설명 "${before.style}" → "${cfg.style_text}"` : null].filter(Boolean);
+  console.log(`ok font.json · ${changed.length ? changed.join(" · ") : "바뀐 것 없음"}`);
+  const got = sheetsOf(dir).filter((x) => existsSync(inboxFile(dir, x.id))).map((x) => x.id);
+  if (changed.length) console.log(`- jobs <dir> 를 다시 돌리면 아직 안 받은 장의 프롬프트가 새 문구가 된다${got.length ? ` · 이미 받은 장(${got.slice(0, 8).join(" ")}${got.length > 8 ? " …" : ""})은 옛 문구로 그려졌다 — 섞이면 글씨가 달라질 수 있다` : ""}`);
 }
 
 // ---- 격자 고르기(한국어 모드). font.json grid: { n, by(auto 자동 · user 사용자 · down 낮춤 · pending 견본 없음), why, measure(견본에서 잰 값), history(바뀐 이력) }
@@ -276,7 +319,7 @@ function planSheetsJa(cfg) {
   console.log(`- 장 ${sheets.length}개(가나 ${kana.length ? KANA.length : 0}자 ${kana.length}장 + 한자 ${kanji.length}자 ${han.length}장 + 부호·숫자 1장)`);
 }
 
-// 이미 있는 작업 폴더에 영문을 더한다. --from <다른 작업 폴더>: 같은 손글씨로 받은 영문 장(inbox/L*.png)·검수(errors.json)를 옮겨 온다
+// 이미 있는 작업 폴더에 영문을 더한다. --from <다른 작업 폴더>: 같은 글씨(같은 견본)로 받은 영문 장(inbox/L*.png)·검수(errors.json)를 옮겨 온다
 async function cmdLatin() {
   const cfg = config(dir);
   if (!cfg.latin) { cfg.latin = true; writeJson(P(dir, "font.json"), cfg); }
@@ -307,16 +350,29 @@ async function cmdLatin() {
 async function cmdDrafts() {
   const d = P(dir, "jobs", "drafts");
   mkdirSync(d, { recursive: true });
-  // --base a.png[,b.png]: 이미 있는 손글씨(다른 글자 체계라도)를 참조로, 같은 사람이 이 폰트의 글자로 쓴 견본 한 장 — 받은 그림은 pick --whole
+  // 묶음 종류(지시서 14): --set hand|print — 기본은 font.json 의 kind
+  const cfg0 = config(dir), set = opt.set == null ? kindOf(cfg0) : String(opt.set);
+  if (!KINDS.includes(set)) die(`--set 은 hand(손글씨 시안) 또는 print(활자 시안) (받은 값: ${opt.set === true ? "없음" : opt.set})`);
+  if (opt.style === true) die('--style 다음에 영어 설명이 필요하다(그 설명을 네 갈래로 변주한다)');
+  const pr = set === "print";
+  // --base a.png[,b.png]: 이미 있는 견본(다른 글자 체계라도)을 참조로, 같은 글씨로 이 폰트의 글자를 쓴 견본 한 장 — 받은 그림은 pick --whole
   if (opt.base && opt.base !== true) {
-    const cfg = config(dir), ja = (cfg.script ?? "ko") === "ja";
+    const cfg = cfg0, ja = (cfg.script ?? "ko") === "ja";
     const bases = String(opt.base).split(",").map((f) => path.resolve(f.trim()));
     for (const f of bases) if (!existsSync(f)) die(`--base 그림이 없다: ${f}`);
     const sharp = await loadSharp();
     const refs = [];
     for (const [i, f] of bases.entries()) { await sharp(f).png().toFile(path.join(d, `ref-${i + 1}.png`)); refs.push(`ref-${i + 1}.png`); }
-    const lines = ja ? DRAFT_LINES_JA : DRAFT_LINES;
-    const text = [
+    const lines = ja ? DRAFT_LINES_JA : pr ? DRAFT_LINES_PRINT : DRAFT_LINES;
+    const text = pr ? [
+      `${refs.length > 1 ? `References 1-${refs.length} are` : "Reference 1 is"} a lettering sample in one printed typeface${ja ? " (in Korean)" : ""}: ${cfg.style_text}.`,
+      `Draw a lettering sample page in the SAME typeface: the same stroke weight, contrast, serifs, proportions and slant, as if set from the same font family${ja ? ", now setting Japanese (hiragana, katakana and kanji) in that same typeface" : ""}.`,
+      "A square sheet of plain white paper seen flat from directly above like a clean scan. Four lines of text set in this typeface, large, legible and centered, one sentence per line, with generous margins.",
+      `Write each sentence exactly as given, every character and punctuation mark unchanged${ja ? " (Japanese kanji forms, every stroke correct)" : ""}:`,
+      ...lines.map((l, i) => `${i + 1}. ${l}`),
+      "It must look like professionally typeset printed type: perfectly straight baseline, consistent letterforms, the same character identical every time, crisp clean edges.",
+      "Black ink only on white paper. No color, no grid, no ruled lines, no drawings, no labels, no text other than the four sentences.",
+    ].join("\n") : [
       `${refs.length > 1 ? `References 1-${refs.length} are` : "Reference 1 is"} handwriting by one person${ja ? " (in Korean)" : ""}: ${cfg.style_text}.`,
       `Write a handwriting sample page by the SAME person with the SAME pen: the same stroke weight, roundness, proportions and slant, as if written on the same day${ja ? ", now writing Japanese (hiragana, katakana and kanji) in that same hand" : ""}.`,
       "A square sheet of plain white paper seen flat from directly above like a clean scan. Four lines of handwriting, large, legible and centered, one sentence per line, with generous margins.",
@@ -326,23 +382,29 @@ async function cmdDrafts() {
       "Black ink only on white paper. No color, no grid, no ruled lines, no drawings, no labels, no text other than the four sentences.",
     ].join("\n");
     writeFileSync(path.join(d, "prompt.txt"), text + "\n", "utf8");
-    writeJson(path.join(d, "job.json"), { id: "drafts", kind: "sample", refs, out: "inbox/drafts.png", lines, size: "정사각, 긴 변 1500px 이상" });
+    writeJson(path.join(d, "job.json"), { id: "drafts", kind: "sample", set, refs, out: "inbox/drafts.png", lines, size: "정사각, 긴 변 1500px 이상" });
     console.log(`ok jobs/drafts (견본 한 장, 참조 ${refs.length}장) — 그림을 inbox/drafts.png 로 받은 뒤 pick --whole`);
     return;
   }
+  const styles = opt.style != null ? draftVariants(String(opt.style)) : pr ? DRAFT_STYLES_PRINT : DRAFT_STYLES;
+  const lines = pr ? DRAFT_LINES_PRINT : DRAFT_LINES;
   const text = [
     "A square sheet of plain white paper, seen flat from directly above like a clean scan, divided into four equal quadrants (2x2) by thin light-grey lines.",
-    "Each quadrant is a handwriting sample of the SAME four Korean sentences, written by hand on four lines, large, legible and centered, with generous margins.",
+    pr ? "Each quadrant is a lettering sample of the SAME four Korean sentences, set in printed type on four lines, large, legible and centered, with generous margins."
+      : "Each quadrant is a handwriting sample of the SAME four Korean sentences, written by hand on four lines, large, legible and centered, with generous margins.",
     "Write each sentence exactly as given, every Hangul character and punctuation mark unchanged, one sentence per line:",
-    ...DRAFT_LINES.map((l, i) => `${i + 1}. ${l}`),
-    "It must look handwritten by a real person, not a typeface: slightly uneven baseline, natural variation in letter size and stroke, the same letter never identical twice.",
-    "Black or dark grey only on white paper. No color, no drawings, no ruled lines, no text other than the sentences and the labels below.",
+    ...lines.map((l, i) => `${i + 1}. ${l}`),
+    pr ? "It must look like professionally typeset printed type: perfectly straight baseline, consistent letterforms, the same letter identical every time, crisp clean edges."
+      : "It must look handwritten by a real person, not a typeface: slightly uneven baseline, natural variation in letter size and stroke, the same letter never identical twice.",
+    pr ? "Black only on white paper. No color, no drawings, no ruled lines, no text other than the sentences and the labels below."
+      : "Black or dark grey only on white paper. No color, no drawings, no ruled lines, no text other than the sentences and the labels below.",
     "In the top-left corner of each quadrant, a small grey label with its number. The four quadrants differ only in the letter shapes:",
-    ...DRAFT_STYLES.map(([n, s], i) => `- ${n} (${["top-left", "top-right", "bottom-left", "bottom-right"][i]}): ${s}.`),
+    ...styles.map(([n, s], i) => `- ${n} (${["top-left", "top-right", "bottom-left", "bottom-right"][i]}): ${s}.`),
   ].join("\n");
   writeFileSync(path.join(d, "prompt.txt"), text + "\n", "utf8");
-  writeJson(path.join(d, "job.json"), { id: "drafts", refs: [], out: "inbox/drafts.png", styles: Object.fromEntries(DRAFT_STYLES) });
-  console.log(`ok jobs/drafts/prompt.txt — 그림을 inbox/drafts.png 로 받은 뒤 pick --quad 1~4`);
+  // set 은 hand 일 때 적지 않는다(0.6.0 의 job.json 과 같게) — pick --quad 는 없으면 hand 로 읽는다
+  writeJson(path.join(d, "job.json"), { id: "drafts", ...(pr ? { set } : {}), refs: [], out: "inbox/drafts.png", styles: Object.fromEntries(styles) });
+  console.log(`ok jobs/drafts/prompt.txt (${pr ? "활자" : "손글씨"} 시안 네 가지${opt.style != null ? " — --style 을 네 갈래로" : ""}) — 그림을 inbox/drafts.png 로 받은 뒤 pick --quad 1~4`);
 }
 
 async function cmdPick() {
@@ -363,9 +425,13 @@ async function cmdPick() {
   const left = q % 2 ? 0 : Math.floor(W / 2), top = q <= 2 ? 0 : Math.floor(H / 2);
   await sharp(src).extract({ left, top, width: Math.floor(W / 2), height: Math.floor(H / 2) }).png().toFile(P(dir, "style", "sample.png"));
   const cfg = config(dir);
-  cfg.style_text = opt.style ?? DRAFT_STYLES[q - 1][1];
+  // 시안 묶음(jobs/drafts/job.json)이 적은 네 설명과 종류를 따른다(지시서 14 — 활자 시안 · --style 변주). 옛 묶음은 손글씨 네 가지
+  const dj = readJson(P(dir, "jobs", "drafts", "job.json"), null), dstyles = dj?.styles ?? Object.fromEntries(DRAFT_STYLES), dset = dj?.set ?? "hand";
+  cfg.style_text = opt.style ?? dstyles[String(q)] ?? DRAFT_STYLES[q - 1][1];
+  const kindNote = dj?.styles && kindOf(cfg) !== dset ? ` · 글씨 종류 ${kindOf(cfg)} → ${dset}(시안 묶음을 따름)` : "";
+  if (kindNote) cfg.kind = dset;
   writeJson(P(dir, "font.json"), cfg);
-  console.log(`ok style/sample.png (사분면 ${q}) · 글씨 설명 "${cfg.style_text}"`);
+  console.log(`ok style/sample.png (사분면 ${q}) · 글씨 설명 "${cfg.style_text}"${kindNote}`);
   await gridFromSample(cfg);
 }
 
@@ -921,7 +987,7 @@ async function cmdCut() {
   if (warned.length) { console.log(`경고 ${warned.length}장(${warned.join(" ")}) — 위의 "다음:" 을 따른다(없으면 review/<장>.png 로 보고, 칸이 어긋났거나 흐리면 그 장을 다시 받는다 — retry <dir> <장>)`); process.exitCode = 2; }
 }
 
-// 에이전트가 눈으로 보는 검토 그림: 칸 손글씨 옆에 써야 할 글자를 활자로
+// 에이전트가 눈으로 보는 검토 그림: 칸 그림 옆에 써야 할 글자를 활자로
 //   6×6 장은 한 장(review/<장>.png, 칸 200px — 0.5.0 과 같은 그림). 격자가 더 크면 6×6 칸씩 쪽을 나눈다(review/<장>-p01.png …, 칸 300px — 작은 칸의 글자를 크게 본다).
 //   장 검사가 못 쓴다고 한 칸(cells.json skip)은 주황 바탕 + 까닭("못 쓰는 줄" · "안 된 장" · "경계 넘음").
 const SKIP_LABEL = { 줄: "못 쓰는 줄(안 씀)", 장: "안 된 장(안 씀)", 경계: "경계 넘음(안 씀)", 빈: "거의 빈 칸(안 씀)" };
@@ -1046,8 +1112,8 @@ function cmdRedo() {
   costNote(n - n0 + made.length);
 }
 
-// ---- 확대 대조: 칸 손글씨(300px) 아래에 그 장의 활자 참조(ref-3) 칸 — 에이전트 검수에서 획 하나 차이를 볼 때
-//   compare <dir> s12:01 s14:34 …   → review/compare.png (활자 참조가 없는 장은 손글씨만)
+// ---- 확대 대조: 칸 그림(300px) 아래에 그 장의 활자 참조(ref-3) 칸 — 에이전트 검수에서 획 하나 차이를 볼 때
+//   compare <dir> s12:01 s14:34 …   → review/compare.png (활자 참조가 없는 장은 칸 그림만)
 async function cmdCompare() {
   const sharp = await loadSharp();
   const items = pos.filter((x) => /^[A-Za-z0-9]+:(\d\d|\d{4})$/.test(x)); // 칸 이름: 격자 10 까지 행열 두 자리("34"), 11 부터 네 자리("0213")
@@ -1068,7 +1134,7 @@ async function cmdCompare() {
   }
   const W = Math.min(6, items.length) * (S + 20), H = Math.ceil(items.length / 6) * (S + 190);
   await sharp({ create: { width: W, height: H, channels: 3, background: "#fff" } }).composite(comp).png().toFile(P(dir, "review", "compare.png"));
-  console.log(`ok review/compare.png · 칸 ${items.length}개(위 손글씨, 아래 활자 참조)`);
+  console.log(`ok review/compare.png · 칸 ${items.length}개(위 칸 그림, 아래 활자 참조)`);
 }
 
 // ---- 조립한 폰트 미리 보기: out/preview.html — 설치 없이 브라우저로 가로·세로(일본어) 조판을 본다
@@ -1271,6 +1337,6 @@ async function cmdBold() {
 }
 
 // KNOWN(맨 위 명령 이름 검사)과 같은 목록이어야 한다
-const CMDS = { init: cmdInit, latin: cmdLatin, drafts: cmdDrafts, pick: cmdPick, grid: cmdGrid, plan: () => planSheets(config(dir)), jobs: cmdJobs, status: cmdStatus, estimate: cmdEstimate, approve: cmdApprove, check: cmdCheck, spend: cmdSpend, openai: cmdOpenai, cut: cmdCut, retry: cmdRetry, review: reviewHtml, redo: cmdRedo, compare: cmdCompare, preview: cmdPreview, glyphs: cmdGlyphs, bold: cmdBold };
+const CMDS = { init: cmdInit, style: cmdStyle, latin: cmdLatin, drafts: cmdDrafts, pick: cmdPick, grid: cmdGrid, plan: () => planSheets(config(dir)), jobs: cmdJobs, status: cmdStatus, estimate: cmdEstimate, approve: cmdApprove, check: cmdCheck, spend: cmdSpend, openai: cmdOpenai, cut: cmdCut, retry: cmdRetry, review: reviewHtml, redo: cmdRedo, compare: cmdCompare, preview: cmdPreview, glyphs: cmdGlyphs, bold: cmdBold };
 if (!CMDS[cmd]) die(`모르는 명령: ${cmd} (help)`);
 await CMDS[cmd]();

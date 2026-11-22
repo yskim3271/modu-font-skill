@@ -115,7 +115,7 @@ export async function measureSample(sharp, src) {
   if (!lines.length) m.error = "줄을 못 찾았다";
   else if (heights.length < 4) m.error = `글자를 못 찾았다(1~6째 줄의 큰 덩어리 ${heights.length}개 — 4개는 있어야 한다)`;
   else if (ratio == null) m.error = "글자 높이나 획 굵기가 안 나왔다";
-  else if (ratio < 0.005 || ratio > 0.4) m.error = `획 ÷ 높이가 ${ratio} — 손글씨로 볼 수 없는 값이다(0.005 ~ 0.40 밖). 어두운 사진이거나 글자가 아닌 그림일 수 있다`;
+  else if (ratio < 0.005 || ratio > 0.4) m.error = `획 ÷ 높이가 ${ratio} — 글씨로 볼 수 없는 값이다(0.005 ~ 0.40 밖). 어두운 사진이거나 글자가 아닌 그림일 수 있다`;
   return m;
 }
 
