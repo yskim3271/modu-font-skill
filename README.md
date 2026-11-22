@@ -4,7 +4,7 @@
 
 # modu-font
 
-An agent skill for Claude Code and Codex that turns the lettering style in one reference image into a real, installable TrueType font. Ask *"turn this handwriting into a font"*: an image model writes every character in that style, cell by cell, on 6×6 sheets; the skill cuts the cells, has the agent and you check each one, traces the outlines and builds Regular and Bold TTFs.
+An agent skill for Claude Code and Codex that turns the lettering style in one reference image into a real, installable TrueType font. Ask *"turn this handwriting into a font"*: an image model writes every character in that style, cell by cell, on gridded sheets (Korean: 14×14 or 12×12, picked from the reference's stroke weight; Japanese and Latin: 6×6); the skill checks each sheet's grid, cuts the cells, has the agent and you check each one, traces the outlines and builds Regular and Bold TTFs.
 
 ## Download the fonts: Modu Dunggeul Pen
 
@@ -23,14 +23,14 @@ Install: on Windows, right-click the `.ttf` files and choose **Install**; on mac
 
 | | Step | Command |
 |---|---|---|
-| ① | Pick the reference image (a photo of lettering you like, or one of four AI drafts) and the character set | `init` (`drafts` → `pick`) |
-| ② | Bundle each sheet: the reference, the sheet format and a prompt listing its 36 characters | `jobs` |
-| ③ | An image model writes the sheet. **The first sheet is checked with you before the rest are drawn**, and it becomes the format reference for the others | OpenAI key or the agent's image tool |
-| ④ | Find the light-blue grid, cut the 36 cells and make a review page | `cut` |
+| ① | Pick the reference image (a photo of lettering you like, or one of four AI drafts) and the character set. For Korean the skill measures the stroke weight and picks the grid (thin: 14×14, thick: 12×12) | `init` (`drafts` → `pick`) |
+| ② | Bundle each sheet: the reference, the sheet format and a prompt listing its characters (196 on a 14×14 sheet) | `jobs` |
+| ③ | An image model writes the sheet. **The first sheet is checked with you before the rest are drawn**, and it becomes the format reference for the others. For Korean the first sheet must also pass the sheet check; if it fails, it is redrawn once at the same grid, then the grid is lowered one step | OpenAI key or the agent's image tool |
+| ④ | Find the light-blue grid, cut the cells and make a review page. For Korean the sheet check runs first (line count, row drift, one character per cell), cells are cut along the found lines, and characters in unusable rows go on correction sheets | `cut` |
 | ⑤ | The agent compares every cell with the character it should be and proposes errors; you confirm them on the page. Wrong characters go on correction sheets | `review` · `redo` |
 | ⑥ | Trace the ink into outlines and build the font, then a Bold weight from the same drawings | `glyphs` → `build_font.py` → `bold` |
 
-The model does make mistakes on rare characters (in the 2,350-character Korean run, 63 of 1,872 cells were wrong on the first try), so the review step is never skipped.
+The model does make mistakes on rare characters (6×6, 2,350 Korean characters: 63 of 1,872 cells wrong on the first try; 14×14, one 500-character font: 3 of 500 wrong on the first try), so the review step is never skipped.
 
 ## Modes
 
@@ -42,14 +42,16 @@ The model does make mistakes on rare characters (in the 2,350-character Korean r
 
 ## Drawing and cost
 
-Images are generated with either an **OpenAI API key** (`hf.mjs openai`) or **the agent's own image tool** (Codex's built-in tool, an image MCP server). Either way the skill shows an estimate first, records your approval and a spending cap in `ledger.json`, and stops at the cap.
+Images are generated with either an **OpenAI API key** (`hf.mjs openai`) or **the agent's own image tool** (Codex's built-in tool, an image MCP server). Either way the skill shows an estimate first, records your approval in `ledger.json` before drawing, and logs what each sheet cost. Redraws, correction sheets and a lower grid are announced with their price; after a correction sheet is made or the grid changes, drawing stops until you approve again.
 
 Measured with GPT Image 2.6 at 2K, about $0.42 per sheet:
 
 | Target | Sheets | Cost |
 |---|---|---|
-| Korean, 500 characters + punctuation | 15 | about $6 |
-| Korean, all 2,350 + punctuation | 67 + a few corrections | about $30 |
+| Korean, 500 characters + punctuation (14×14, thin strokes) | 4 + corrections | about $1.7 + corrections (measured: 4 sheets $1.70 + corrections) |
+| Korean, 500 characters + punctuation (12×12, thick strokes) | 5 + corrections | about $2.1 + corrections |
+| Korean, all 2,350 + punctuation (14×14) | 13 + corrections | about $5.5 + corrections |
+| Korean, all 2,350 + punctuation (12×12) | 18 + corrections | about $7.6 + corrections |
 | Japanese, 2,136 Joyo kanji + kana + punctuation | 69 (measured) | $30.22 |
 | Add Latin | 3 (measured, no corrections) | $1.29 |
 
