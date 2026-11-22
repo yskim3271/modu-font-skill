@@ -4,7 +4,7 @@
 
 # modu-font
 
-An agent skill for Claude Code and Codex that turns the lettering style in one reference image into a real, installable TrueType font. Ask *"turn this handwriting into a font"*: an image model writes every character in that style, cell by cell, on gridded sheets (Korean: 14×14 or 12×12, picked from the reference's stroke weight; Japanese and Latin: 6×6); the skill checks each sheet's grid, cuts the cells, has the agent and you check each one, traces the outlines and builds Regular and Bold TTFs.
+An agent skill for Claude Code and Codex that turns the lettering style in one reference image into a real, installable TrueType font: handwriting, or printed type such as a Myeongjo or Gothic. Ask *"turn this handwriting into a font"* or *"make a Myeongjo font in this style"*: an image model writes every character in that style, cell by cell, on gridded sheets (Korean: 14×14 or 12×12, picked from the reference's stroke weight; Japanese and Latin: 6×6); the skill checks each sheet's grid, cuts the cells, has the agent and you check each one, traces the outlines and builds Regular and Bold TTFs.
 
 ## Download the fonts: Modu Dunggeul Pen
 
@@ -73,7 +73,7 @@ npm install                      # sharp
 pip install -r requirements.txt  # fontTools
 ```
 
-Then ask your agent: *"turn the handwriting in this image into a font"*. The skill asks a few short questions first (reference, character count, how to draw, font name, whether to add Latin), and nothing that costs money runs before you approve it. Full rules: [SKILL.md](skills/modu-font/SKILL.md) · commands: [commands.md](skills/modu-font/references/commands.md). The skill's own instructions and references are written in Korean; agents follow them in any language.
+Then ask your agent: *"turn the handwriting in this image into a font"* (or *"the lettering in this image"* for printed type). The skill asks a few short questions first (handwriting or printed type, reference, character count, how to draw, font name, whether to add Latin), and nothing that costs money runs before you approve it. Full rules: [SKILL.md](skills/modu-font/SKILL.md) · commands: [commands.md](skills/modu-font/references/commands.md). The skill's own instructions and references are written in Korean; agents follow them in any language.
 
 ## License
 

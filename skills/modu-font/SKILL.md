@@ -1,6 +1,6 @@
 ---
 name: modu-font
-description: Make a Korean (Hangul) or Japanese (kana + kanji) handwriting TrueType font from one handwriting sample with an image-generation model — sheets of square cells, one character per cell (Korean - a 14x14 or 12x12 grid picked from the sample's stroke weight; if the first sheet fails the sheet check it is redrawn once at the same grid and only then the grid is lowered one step at a time down to 6x6; Japanese and Latin - 6x6), cut along the grid lines, human-checked, traced to outlines, with a bold weight and optional Latin letters (A–Z, a–z, ASCII punctuation) in the same hand. Use when the user wants their own or an AI-drafted handwriting as an installable Korean or Japanese font (webtoon/manga speech bubbles, notes, Word), wants to add English letters to such a font, or mentions 손글씨 폰트, 한글 폰트 만들기, KS X 1001 2,350자, 手書きフォント, 상용한자 일본어 폰트, 영문 추가.
+description: Make a Korean (Hangul) or Japanese (kana + kanji) TrueType font — a font in the lettering style of one reference image (handwriting or printed type) — with an image-generation model — sheets of square cells, one character per cell (Korean - a 14x14 or 12x12 grid picked from the sample's stroke weight; if the first sheet fails the sheet check it is redrawn once at the same grid and only then the grid is lowered one step at a time down to 6x6; Japanese and Latin - 6x6), cut along the grid lines, human-checked, traced to outlines, with a bold weight and optional Latin letters (A–Z, a–z, ASCII punctuation) in the same style. Use when the user wants their own handwriting, an AI-drafted handwriting or a printed-type look (e.g. a Myeongjo or Gothic for game subtitles) as an installable Korean or Japanese font (webtoon/manga speech bubbles, subtitles, notes, Word), wants to add English letters to such a font, or mentions 손글씨 폰트, 한글 폰트 만들기, 명조 · 고딕 글꼴 만들기, KS X 1001 2,350자, 手書きフォント, 상용한자 일본어 폰트, 영문 추가.
 license: MIT
 compatibility: Node 18.17+ with sharp (npm install in this folder) and Python 3 with fontTools (pip install -r requirements.txt). Needs ONE paid way to generate images — an OpenAI API key, or the host agent's own image tool / an image MCP server.
 metadata:
@@ -9,16 +9,17 @@ metadata:
 
 # 모두의 폰트 스킬 (modu-font) — 참고 이미지 한 장의 글씨체로 폰트 만들기
 
-원하는 글씨체의 참고 이미지(손글씨 사진이나 AI 시안)를 견본으로, 이미지 생성 모델이 격자에 한 칸 한 글자씩 쓰게 하고, 칸을 잘라 사람이 확인한 뒤 윤곽을 따서 TTF(보통·굵게)로 조립한다. 한국어 본문은 견본의 획 굵기를 재서 14×14 나 12×12 격자로 쓰고(첫 장이 장 검사에 떨어지면 같은 격자로 한 번 더 받고, 또 떨어지면 6×6 까지 한 단계씩 낮춘다), 일본어와 영문 장은 6×6 이다. 모드: 한국어(기본, `references/korean.md`) · 일본어(`references/japanese.md`) · 영문 더하기(`references/latin.md`). 처음 만든 결과물: "모두의 둥글펜"(한글 2,338/2,350자 + 영문, 일본어판 포함 — 6×6 으로 만들었다).
+원하는 글씨체의 참고 이미지(손글씨 사진, 활자 글씨 그림, 또는 AI 시안)를 견본으로, 이미지 생성 모델이 격자에 한 칸 한 글자씩 쓰게 하고, 칸을 잘라 사람이 확인한 뒤 윤곽을 따서 TTF(보통·굵게)로 조립한다. 한국어 본문은 견본의 획 굵기를 재서 14×14 나 12×12 격자로 쓰고(첫 장이 장 검사에 떨어지면 같은 격자로 한 번 더 받고, 또 떨어지면 6×6 까지 한 단계씩 낮춘다), 일본어와 영문 장은 6×6 이다. 글씨 종류는 둘이다 — **손글씨**(`hand`, 기본)와 **활자**(`print` — 명조 · 고딕 같은 인쇄 글씨). 종류에 따라 프롬프트 · 시안의 말이 바뀐다(`font.json` 의 `kind`). 모드: 한국어(기본, `references/korean.md`) · 일본어(`references/japanese.md`) · 영문 더하기(`references/latin.md`). 처음 만든 결과물: "모두의 둥글펜"(한글 2,338/2,350자 + 영문, 일본어판 포함 — 6×6 으로 만들었다).
 
 모든 명령: `node scripts/hf.mjs <명령> <작업 폴더> [옵션]` (목록 `references/commands.md`). 작업 폴더는 사용자 프로젝트 안 아무 곳(예: `./my-font`).
 
 ## 0. 시작 전에 사용자와 정할 것 (짧게 묻는다)
-1. **견본**: 손글씨 사진이 있나, 아니면 AI 시안 4개(`drafts`)에서 고를까?
-2. **글자 수**: 말풍선용 약 500자(`--count 500`) / KS X 1001 전체 2,350자. 장 수는 격자에 따라 다르다(아래 표 — 부호·채팅 자모·숫자 36자 1장 포함, 다시 쓰기 장은 따로).
-3. **그리는 방법(백엔드)** — 아래 표에서 하나. 섞어 써도 된다(받은 장은 모두 `inbox/` 로 모인다).
-4. **이름**: 영어(`--family-en`)와 한국어(`--family-ko`). 남의 폰트·브랜드 이름(예: "나눔")은 쓰지 않는다.
-5. **영문**: 같은 손글씨로 영문(대소문자·ASCII 부호, 3장 약 $1.3)도 넣을까? 넣으면 `init … --latin`(이미 만든 폴더는 `latin <dir>`). 자세히 `references/latin.md`.
+1. **글씨 종류**: 손글씨인가, 활자(명조 · 고딕 같은 인쇄 글씨)인가? → `init --kind hand|print`(기본 hand). 나중에 바꾸려면 `style <dir> --kind print`(init 을 다시 부르지 않는다).
+2. **견본**: 견본 그림(손글씨 사진 · 활자 글씨 그림)이 있나, 아니면 AI 시안 4개(`drafts` — 글씨 종류에 맞는 네 가지: 손글씨 넷 또는 활자 넷 · `--style "<설명>"` 이면 그 설명의 네 갈래)에서 고를까?
+3. **글자 수**: 말풍선용 약 500자(`--count 500`) / KS X 1001 전체 2,350자. 장 수는 격자에 따라 다르다(아래 표 — 부호·채팅 자모·숫자 36자 1장 포함, 다시 쓰기 장은 따로).
+4. **그리는 방법(백엔드)** — 아래 표에서 하나. 섞어 써도 된다(받은 장은 모두 `inbox/` 로 모인다).
+5. **이름**: 영어(`--family-en`)와 한국어(`--family-ko`). 남의 폰트·브랜드 이름(예: "나눔")은 쓰지 않는다.
+6. **영문**: 같은 글씨로 영문(대소문자·ASCII 부호, 3장 약 $1.3)도 넣을까? 넣으면 `init … --latin`(이미 만든 폴더는 `latin <dir>`). 자세히 `references/latin.md`.
 
 **격자는 묻지 않는다 — 스킬이 견본을 재서 정하고 까닭을 한 줄로 말한다**(한국어 모드). 사용자가 정하고 싶어 하면 `init … --grid 6|8|10|12|14`.
 
@@ -47,9 +48,10 @@ init(견본 → 격자) → (drafts → pick) → jobs → estimate → approve 
 ```
 **첫 장 통과** = 첫 본문 장(s01)의 장 검사가 "됨"이고 빈 칸이 0 이고 그림이 정사각 · 긴 변 1,500px 이상인 것(빈 칸이 있는 6×6 첫 장은 "됨"이어도 통과가 아니다). 그때 그 그림이 형식 참조(`style/format.png`)가 된다. **첫 장이 통과하기 전에는 다른 한국어 장(본문 · 부호 · 다시 쓰기)으로 돈이 나가지 않는다** — `jobs` 가 묶지 않고, `spend` 가 적지 않고, `openai` 가 보내지 않는다(영문 장과 시안은 따로다).
 
-1. `init <dir> --sample 견본.png --family-en "My Hand" --family-ko "내 손글씨" --style "<글씨 설명(영어)>" --count 500`
-   - 견본이 없으면 `init <dir>` → `drafts <dir>` → 그림을 `inbox/drafts.png` 로 받기 → `pick <dir> --quad 1~4`.
-   - `--style` 은 견본 글씨를 영어로 한 줄(예: "round, bubbly everyday handwriting with a thin black 0.5 mm gel pen (soft curves, big round ㅇ, chubby short letters)"). 프롬프트에 그대로 들어간다.
+1. `init <dir> --sample 견본.png [--kind print] --family-en "My Hand" --family-ko "내 손글씨" --style "<글씨 설명(영어)>" --count 500`
+   - `--kind`: `hand`(손글씨, 기본) · `print`(활자). 프롬프트가 손글씨면 "같은 사람이 같은 펜으로", 활자면 "같은 활자(같은 폰트 파일에서 찍은 것처럼) · 되풀이되는 글자는 칸마다 똑같이"로 쓴다. 바꾸려면 `style <dir> --kind …` → `jobs` 다시(이미 받은 장은 옛 문구로 그려졌다).
+   - 견본이 없으면 `init <dir>` → `drafts <dir>`(글씨 종류의 시안 네 가지 — 다른 종류는 `--set hand|print`) → 그림을 `inbox/drafts.png` 로 받기 → `pick <dir> --quad 1~4`(그 시안 묶음의 설명과 종류가 `font.json` 에 적힌다).
+   - `--style` 은 견본 글씨를 영어로 한 줄(손글씨 예: "round, bubbly everyday handwriting with a thin black 0.5 mm gel pen (soft curves, big round ㅇ, chubby short letters)" · 활자 예: "modern Myeongjo serif type: crisp clean edges, moderate stroke contrast, small sharp serifs"). 프롬프트에 그대로 들어간다 — 활자면 "not handwriting" 같은 말은 넣지 않아도 된다(종류가 말한다).
    - **격자는 견본이 정해질 때 잰다**: `init --sample` 때, 견본 없이 만들었으면 `pick` 때, 견본을 손으로 `style/sample.png` 에 넣었으면 다음 `jobs` 때(첫 장을 받기 전에는 `grid <dir> --auto` 로 다시 잴 수 있다). 견본에서 획 굵기와 글자 높이를 재서 `획 ÷ 높이 < 0.09 → 14×14(가는 글씨)`, `그 이상 → 12×12(굵은 글씨)`. 견본이 기울어 있으면(±12° 안) 글줄이 수평이 되게 되돌려서 잰다(`style/sample.png` 는 그대로 둔다). 화면에 `격자 14×14 — 견본의 획 굵기 ÷ 글자 높이 0.0602(획 8.3px ÷ 높이 138px) < 0.09 → 가는 글씨 → 14×14` 처럼 나오고 `font.json` 의 `grid` 에 남는다 — **이 한 줄과 장 수를 사용자에게 말한다.** 견본을 재지 못하면(글자 줄을 못 찾음 등) 12×12 로 두고 그렇게 알린다(굵은 글씨면 첫 장 검사가 10×10 으로 낮춘다 — 정하려면 `init --grid <N>` · `grid <dir> --set <N>`). 언제든 `grid <dir>` 로 지금 격자·근거·내려갈 차례를 본다.
 2. `jobs <dir>` — 안 받은 장마다 묶음(`ref-1.png` 견본, `ref-2.png` 형식, `prompt.txt`, `job.json`). **첫 장이 통과하기 전에는 첫 한글 장(s01) 하나만 묶는다.** `--all` 은 묶음만 미리 만드는 것이다 — 그래도 첫 장 통과 전에는 첫 장만 그린다. 첫 장을 받았는데 통과하지 못한 채로 부르면 `jobs` 는 다른 한국어 장을 묶지 않고 멈추며 먼저 할 일을 말한다.
 3. **견적 → 승인** — `estimate <dir>` 의 장 수 × 장당 값을 사용자에게 말하고 "예"를 받아 `approve`. 아래 "돈 규칙".
@@ -80,9 +82,9 @@ init(견본 → 격자) → (drafts → pick) → jobs → estimate → approve 
 
    **다시 받을 때는 늘 `retry <dir> <장>` → `jobs <dir> <장>`** 이다. `retry` 는 받은 그림을 `inbox/rejected/` 로 치우고 그 장의 칸·검수 그림·묶음을 지운다(`openai --retry` 와는 다른 것이다). 다시 받기는 **떨어졌다는 것과 한 장 값이 더 든다는 것을 사용자에게 한 줄로 알리고** 간다. `cut` 은 `review/<장>.png`(에이전트용 — 6×6 보다 큰 격자는 6×6 칸씩 쪽을 나눠 `review/<장>-p01.png` …)와 `review/index.html`(사람용)을 만든다. 빈 칸은 빨간 테두리, 장 검사가 못 쓴다고 한 칸은 주황 테두리로 보인다. 영문 장과 일본어 모드는 장 검사 없이 예전대로 자른다(격자를 못 찾으면 6등분).
 6. **검수는 빼지 않는다.** 모델은 드문 글자에서 틀린다(6×6 실측 1,872칸 중 63칸: ㅠ·ㅛ 다리 하나, ㅁ 을 ㅇ 처럼, 받침 ㅅ→ㅆ, ㄻ·ㄶ→ㄼ, ㅞ·ㅙ 세로획 빠짐). 틀린 칸은 **작업 폴더 바로 아래의 `errors.json`**(`font.json` 옆)에 적는다: `{"s07": {"24": "?"}}` = 버림, `{"s07": {"24": "쬐"}}` = 실제로는 '쬐'를 씀. 칸 이름은 행·열(0부터): 10×10 까지는 한 자리씩 `"24"`, 11×11 부터는 두 자리씩 `"0213"`(3번째 줄 14번째 칸). 기준은 `references/review.md`.
-   - 에이전트는 검수 그림을 한 쪽씩 보며 칸마다 파란 글자와 손글씨를 대조해 틀린 칸을 `errors.json` 에 **제안**으로 적고 `review <dir>` 를 돌린다(페이지는 만들 때의 `errors.json` 을 담는다 — 고친 뒤에는 꼭 다시 돌린다).
+   - 에이전트는 검수 그림을 한 쪽씩 보며 칸마다 파란 글자와 칸 그림을 대조해 틀린 칸을 `errors.json` 에 **제안**으로 적고 `review <dir>` 를 돌린다(페이지는 만들 때의 `errors.json` 을 담는다 — 고친 뒤에는 꼭 다시 돌린다).
    - 사용자는 `review/index.html` 에서 칸을 눌러 확인 · 고친다. 페이지는 파일을 쓰지 못한다 — **페이지 아래에 생긴 JSON 을 사용자가 복사해 에이전트에게 붙여 주면 에이전트가 그 JSON 으로 `errors.json` 을 통째로 바꿔 저장한다**(사용자가 직접 저장해도 된다). 그 뒤 `review <dir>`.
-   - **둥근 글씨의 ㅁ**: 둥근 글씨는 ㅁ 이 ㅇ 처럼 둥글게 나오기 쉽다(3단계 둥글펜 14×14 — 첫 장 196칸 가운데 셋, 다시 쓰기 장 두 장이 통째로 이 실수). ㅁ 이 든 글자는 `compare` 로 크게 보고, **위 · 아래 모서리가 보이는 상자일 때만 맞음**으로 친다 — 애매하면 틀림으로 두고 사용자에게 그림을 보여 주고 정한다.
+   - **둥근 글씨의 ㅁ**(손글씨): 둥근 손글씨는 ㅁ 이 ㅇ 처럼 둥글게 나오기 쉽다(3단계 둥글펜 14×14 — 첫 장 196칸 가운데 셋, 다시 쓰기 장 두 장이 통째로 이 실수). ㅁ 이 든 글자는 `compare` 로 크게 보고, **위 · 아래 모서리가 보이는 상자일 때만 맞음**으로 친다 — 애매하면 틀림으로 두고 사용자에게 그림을 보여 주고 정한다.
    - 장을 통째로 버리려면(예: 사용자가 다시 쓰기 장을 받아들이지 않을 때) `errors.json` 에 `{"r01": "*"}` 처럼 장 이름에 `"*"` 를 준다 — 그 장의 칸은 하나도 쓰이지 않고 `redo` 가 그 글자를 다시 쓰기 장으로 보낸다(본문 · 부호 · 다시 쓰기 장 모두).
    - 마지막 본문 장의 남는 칸에 들어간 **목표 밖 글자**(14×14 · 500자면 본문 588칸이라 88자가 더 쓰인다)도 본다 — 맞으면 폰트에 들어가고, 틀려서 `"?"` 로 버리면 그냥 빠진다(`redo` 는 목표 글자와 부호만 다시 쓰기 장으로 보낸다).
 7. `redo <dir> [--print] [--replace]` — 아직 없는 본문 글자(틀린 칸 · 못 쓰는 줄 · 안 된 장의 글자)만 모아 그 폰트의 격자로 다시 쓰기 장(흔한 실수 목록 + 자모 풀이, `--print` 면 활자 철자 참조 ref-3). 부호 장에서 빠진 글자(예: ★ 를 ☆ 로 그림)는 부호 장 형식의 다시 쓰기 장으로 따로 만든다. **다시 쓰기 장도 한 장 값씩 든다 — `redo` 가 장 수 × 장당 값을 새 견적으로 내고, 그 견적을 말하고 다시 승인(`approve --note`)받기 전에는 `check` · `spend` · `openai` 가 멈춘다.** 다시 쓰기 장의 형식 참조(ref-2)는 기본이 "검수에서 틀린 칸이 가장 적은 '됨' 본문 장(같으면 앞 장)"이고, `jobs <dir> <장> --format <장>` 으로 고를 수 있다(3단계에서 실수가 있던 첫 장을 형식 참조로 쓴 다시 쓰기 장 둘은 기준에 맞는 ㅁ 이 0, 실수 없는 둘째 장을 쓴 장은 108칸 가운데 11 — 한 번뿐인 비교다). 의심 칸은 `compare <dir> <장>:<칸> …` 로 크게 보고 활자 참조와 대조한다. 안 받은 다시 쓰기 장이 남아 있으면 멈춘다(같은 글자에 두 번 내지 않게) — 그 장을 버리고 새로 만들려면 `--replace`. 두 번 해도 안 되는 글자는 멈추고 사용자에게 알린다(대체 글꼴로 나오게 두는 것도 답이다).
@@ -107,7 +109,7 @@ init(견본 → 격자) → (drafts → pick) → jobs → estimate → approve 
 - 정확도는 GPT Image 2.6(2K)로 쟀다: 6×6 은 500자 432/432, 2,350자 1,809/1,872(첫 시도). 14×14 는 둥글펜 500자 한 벌에서 목표 500자 가운데 497(틀린 셋은 모두 첫 장의 ㅁ → ㅇ) — 한 벌뿐이다. 첫 장으로 먼저 확인하고 검수를 꼼꼼히 한다. 다른 모델도 첫 장으로 먼저 확인한다.
 - 받는 그림은 정사각·긴 변 1,500px 이상 원본 PNG. 채팅 앱 미리보기 캡처는 흐려서 윤곽이 뭉개진다.
 - 격자 정보가 없는 옛 작업 폴더(`font.json` 에 `grid` 가 없다)는 6×6 그대로다 — 만들던 폰트가 바뀌지 않는다. 6×6 한국어 장도 이제 장 검사를 거친다: 선 7개를 고르게 찾던 장의 칸 그림은 예전과 바이트까지 같고, 예전에 6등분으로 넘어가던 장(선 수가 틀리거나 칸 간격이 1.3배 넘게 고르지 않은 장)은 이제 "안 됨"이거나 찾은 선대로 잘린다. 첫 장 통과 전에 다른 장을 막는 것도 6×6 에 똑같이 든다.
-- **영문**(`--latin` / `latin <dir>`): 한국어·일본어 폰트 모두 같은 3장(L1~L3, 본문 격자와 상관없이 6×6) — 대소문자 52 + ASCII 부호 32 + “ ” ‘ ’ – —. 칸마다 하늘색 안내선(대문자 높이·x-높이·기준선)을 긋고, 조립 때 기준선·x-높이에 맞추고 옆 여백·커닝을 넣는다. 폰트에 이미 있는 부호(한국어 , . ? ! 등)는 그대로 둔다. 첫 영문 장(L1)을 받아 확인한 뒤 나머지 2장. 같은 손글씨의 다른 폰트 폴더로 받은 영문 장은 `latin <dir> --from <그 폴더>` 로 옮겨 쓴다(다시 그리지 않는다). 검수는 대소문자(c/C, o/O, s/S …)와 기준선을 본다. 자세히 `references/latin.md`.
+- **영문**(`--latin` / `latin <dir>`): 한국어·일본어 폰트 모두 같은 3장(L1~L3, 본문 격자와 상관없이 6×6) — 대소문자 52 + ASCII 부호 32 + “ ” ‘ ’ – —. 칸마다 하늘색 안내선(대문자 높이·x-높이·기준선)을 긋고, 조립 때 기준선·x-높이에 맞추고 옆 여백·커닝을 넣는다. 폰트에 이미 있는 부호(한국어 , . ? ! 등)는 그대로 둔다. 첫 영문 장(L1)을 받아 확인한 뒤 나머지 2장. 같은 글씨(같은 견본)의 다른 폰트 폴더로 받은 영문 장은 `latin <dir> --from <그 폴더>` 로 옮겨 쓴다(다시 그리지 않는다). 검수는 대소문자(c/C, o/O, s/S …)와 기준선을 본다. 자세히 `references/latin.md`.
 - **한국어(한글)** 는 기본 모드(`--script ko`, 생략 가능) — 격자·장 구성·자모 풀이·부호 장·장 검사·흔한 실수·조립 규칙은 `references/korean.md`.
-- **일본어(가나·한자)** 는 `init --script ja` — 6×6 고정이다(`--grid` 는 못 쓴다 — 한자·가나는 작은 칸으로 재 본 적이 없다). 상용한자 2,136자 + 가나 + 부호를 69장·$30 으로 실제로 만들었다(첫 시도에 틀린 칸은 부호 ★ 하나). 세로쓰기(세로용 부호 모양 · vhea/vmtx · vert)도 조립 때 저절로 들어간다 — 그림을 더 그리지 않는다. 한자 목록은 `scripts/kanji-list.mjs`(빈도순, 자료 다운로드는 사용자에게 묻고). 한국어 손글씨에서 시작하면 `drafts --base` → `pick --whole` 로 일본어 견본부터. 자세히 `references/japanese.md`.
+- **일본어(가나·한자)** 는 `init --script ja` — 6×6 고정이다(`--grid` 는 못 쓴다 — 한자·가나는 작은 칸으로 재 본 적이 없다). 상용한자 2,136자 + 가나 + 부호를 69장·$30 으로 실제로 만들었다(첫 시도에 틀린 칸은 부호 ★ 하나). 세로쓰기(세로용 부호 모양 · vhea/vmtx · vert)도 조립 때 저절로 들어간다 — 그림을 더 그리지 않는다. 한자 목록은 `scripts/kanji-list.mjs`(빈도순, 자료 다운로드는 사용자에게 묻고). 한국어 견본에서 시작하면 `drafts --base` → `pick --whole` 로 일본어 견본부터. 자세히 `references/japanese.md`.
 - 만든 폰트를 배포하려면 쓴 생성 서비스의 약관(출력물 상업 이용)을 사용자가 확인한다. 라이선스는 사용자가 정하고(무료 폰트는 보통 SIL OFL 1.1), `font.json` 에 `copyright` · `license`(짧은 설명) · `license_url` · `description` 을 적으면 조립 때 폰트 이름 표(0·13·14·10)에 들어간다.

@@ -1,14 +1,17 @@
 모두의 폰트 스킬(modu-font) — node scripts/hf.mjs <명령> <작업 폴더> [옵션]
 
-  init <dir> [--script ko] [--sample 견본.png] [--family-en "My Hand"] [--family-ko "내 손글씨"] [--style "<영어 글씨 설명>"] [--count 2350] [--price 0.42] [--grid 6|8|10|12|14]   한국어(기본, references/korean.md)
+  init <dir> [--script ko] [--kind hand|print] [--sample 견본.png] [--family-en "My Hand"] [--family-ko "내 손글씨"] [--style "<영어 글씨 설명>"] [--count 2350] [--price 0.42] [--grid 6|8|10|12|14]   한국어(기본, references/korean.md)
                                 격자: --grid 를 안 주면 견본을 재서 정한다(획 굵기 ÷ 글자 높이 < 0.09 → 14, 그 밖 → 12 · 못 재면 12 · 견본이 아직 없으면 6). 견본 없이 만들면 pick 때, 견본을 손으로 style/sample.png 에 넣었으면 다음 jobs 때 잰다(기울어 있으면 되돌려서 잰다).
                                 --price 는 font.json 에 적혀 그 뒤의 모든 견적 · check 가 쓴다. 일본어 모드에는 --grid 를 못 쓴다(6×6 고정)
+                                --kind: 글씨 종류 hand(손글씨, 기본 — kind 가 없는 옛 폴더도 hand) · print(활자 — 명조 · 고딕 같은 인쇄 글씨). 프롬프트 · 시안의 말이 이것으로 갈린다
+  style <dir> [--kind hand|print] [--style "<영어 설명>"]   글씨 종류 · 설명을 바꾼다(init 을 다시 부르지 않는다) — 옵션이 없으면 지금 값을 보여 준다. 바꾼 뒤 jobs 를 다시 돌리면 안 받은 장의 프롬프트가 새 문구
   init <dir> --script ja [--family-ja "わたしの手書き"] [--chars 한자.txt | --set jis1|jis12] [--count <한자 수>] [--kana no] …   일본어(references/japanese.md)
   init <dir> … --latin [--base <glyphs.json> [--base-bold <glyphs-bold.json>]]   영문 3장 더하기 · 다른 폴더에서 만든 글자 그림을 바탕으로(references/latin.md)
   latin <dir> [--from <다른 작업 폴더>] [--force]   이미 있는 작업 폴더에 영문 3장(L1~L3, 늘 6×6)을 더한다 · --from 이면 그 폴더에서 받은 영문 장·검수를 옮긴다
-  drafts <dir>                  AI 시안 4개(2×2)를 그릴 묶음 jobs/drafts — 받은 그림은 inbox/drafts.png
-  drafts <dir> --base a.png[,b.png]   이미 있는 손글씨(다른 글자 체계도)로 같은 사람의 견본 한 장 — 받은 뒤 pick --whole
-  pick <dir> --quad 1~4 | --whole [--style "..."]   시안 사분면(또는 통째로)을 style/sample.png 로 — 격자가 아직 안 정해졌으면 이 견본을 재서 정한다
+  drafts <dir> [--set hand|print] [--style "<설명>"]   AI 시안 4개(2×2)를 그릴 묶음 jobs/drafts — 받은 그림은 inbox/drafts.png
+                                --set: 손글씨 네 가지(hand) · 활자 네 가지(print — 명조 둘 · 고딕 둘), 기본 = font.json 의 kind. --style 이면 그 설명을 네 갈래(그대로 · 가늘게 · 굵게 · 좁고 각지게)로
+  drafts <dir> --base a.png[,b.png] [--set …]   이미 있는 견본(다른 글자 체계도)과 같은 글씨로 이 폰트의 견본 한 장 — 받은 뒤 pick --whole
+  pick <dir> --quad 1~4 | --whole [--style "..."]   시안 사분면(또는 통째로)을 style/sample.png 로 — 격자가 아직 안 정해졌으면 이 견본을 재서 정한다. --quad 는 그 시안 묶음의 설명을 style 로, 묶음의 종류를 kind 로 적는다
   grid <dir>                    한국어 모드의 격자: 지금 격자 · 근거(견본에서 잰 값) · 첫 장의 시도 · 치운 그림 · 내려갈 차례
   grid <dir> --down [--price X]   한 단계 낮춘다(14 → 12 → 10 → 8 → 6): 받은 첫 장을 inbox/rejected/ 로 치우고 장 목록 · 빈 격자를 새 격자로 다시 만든다.
                                 장 수가 바뀌어 새 견적을 낸다 — 그 견적을 말하고 새 approve 를 받기 전에는 check · spend · openai 가 멈춘다.
