@@ -16,6 +16,20 @@ export async function loadSharp() {
 export const config = (dir) => readJson(P(dir, "font.json")) ?? die(`${P(dir, "font.json")} 가 없다 — 먼저 init`);
 export const sheetsOf = (dir) => readJson(P(dir, "sheets.json"), { sheets: [] }).sheets;
 
+// ---- 격자(한 장의 칸 수 N×N). 한국어 본문 장 · 부호 장 · 다시 쓰기 장은 그 폰트의 격자, 영문 장과 일본어 모드는 늘 6.
+//   고를 수 있는 값이자 내려가는 차례. 규칙(0.09 · 14/12 · 한 번 더 · 낮추기)은 글씨체 다섯 개 · 장 18개에서 나온 임시 규칙이다.
+export const GRIDS = [14, 12, 10, 8, 6];
+export const GRID_BOUND = 0.09; // 견본의 획 굵기 ÷ 글자 높이가 이 값 미만이면 가는 글씨(14), 아니면 굵은 글씨(12)
+export const gridOfFont = (cfg) => cfg?.grid?.n ?? 6; // 격자 정보가 없는 옛 작업 폴더는 6
+export const gridOfSheet = (s) => s.rows.length;      // 장의 격자는 그 장의 줄 수(sheets.json) — 한 폰트에 본문 14 + 영문 6 이 같이 든다
+// 칸 이름: N ≤ 10 은 행열 한 자리씩("24" = 3번째 줄 5번째 칸), N ≥ 11 은 두 자리씩("0213" = 3번째 줄 14번째 칸). 0 부터 센다.
+export const rcName = (r, c, N) => (N <= 10 ? `${r}${c}` : `${String(r).padStart(2, "0")}${String(c).padStart(2, "0")}`);
+export const rcParse = (rc) => (rc.length === 2 ? [+rc[0], +rc[1]] : [+rc.slice(0, 2), +rc.slice(2)]);
+// 칸 그림을 뜰 때 선에서 안쪽으로 띄우는 화소. 6×6 은 0.5.0 과 같은 max(6, 2%) — 작은 칸에서는 최솟값이 36 ÷ N 으로 줄어 칸의 2~3% 가 된다
+export const padOf = (cellW, N) => Math.max(Math.round(36 / N), Math.round(cellW * 0.02));
+// 빈 칸으로 치는 잉크 화소 수(이 값 미만). 6×6 은 30 그대로, 작은 칸은 넓이 비례(바닥 4) — 작은 칸의 마침표가 빈 칸이 되지 않게
+export const emptyPx = (N) => Math.max(4, Math.floor(30 * (6 / N) ** 2));
+
 // KS X 1001 한글 2,350자(EUC-KR B0A1~C8FE). 차례는 assets/ks2350-order.txt(자주 쓰는 글자 먼저).
 export function ks2350() {
   const d = new TextDecoder("euc-kr"), out = [];
@@ -146,16 +160,18 @@ export function prompt(sheet, cfg, { format = "sheet", print = false } = {}) {
   if (sheet.kind === "latin") return promptLatin(sheet, cfg, { format });
   if ((cfg.script ?? "ko") === "ja") return promptJa(sheet, cfg, { format, print });
   const style = cfg.style_text;
+  // 격자 N×N(그 장의 줄 수). N = 6 이면 문구가 0.5.0 과 글자 하나까지 같다. "an 8x8" — 8 · 11 · 18 은 모음 소리로 시작한다
+  const N = gridOfSheet(sheet), a = [8, 11, 18].includes(N) ? "an" : "a";
   const ref2 = format === "blank"
-    ? "Reference 2 is an EMPTY grid: it only shows the exact target format (paper, 6x6 light-blue grid, margins)."
+    ? `Reference 2 is an EMPTY grid: it only shows the exact target format (paper, ${N}x${N} light-blue grid, margins).`
     : "Reference 2 is an earlier sheet by the same hand: the exact target format, and how this hand writes single characters in cells.";
   const head = [
     `Reference 1 is a handwriting sample. ${ref2}`,
     `Write a new sheet in EXACTLY the same handwriting: ${style}. Same stroke weight, letter proportions, roundness and slant, as if the same person wrote it with the same pen on the same day.`,
-    "Layout exactly like reference 2: a square sheet of plain white paper seen flat from directly above like a clean scan, a 6x6 grid of equal square cells drawn with thin light-blue lines, filling the sheet with a small even margin. Black ink; only the grid lines are light blue.",
+    `Layout exactly like reference 2: a square sheet of plain white paper seen flat from directly above like a clean scan, ${a} ${N}x${N} grid of equal square cells drawn with thin light-blue lines, filling the sheet with a small even margin. Black ink; only the grid lines are light blue.`,
     "No other text: no labels, no numbers outside the listed ones, no titles. No drawings, no shadows, no decorations. Do NOT copy the characters of reference 2; write only the characters listed below.",
   ];
-  if (print) head.push("Reference 3 is NOT handwriting: it shows the very same 36 characters printed in a standard typeface, cell for cell in the same grid. Use it only to get every syllable's jamo structure exactly right (count the strokes of each vowel and each final consonant there), but draw every stroke in the handwriting of references 1 and 2 — never copy the printed letter shapes.");
+  if (print) head.push(`Reference 3 is NOT handwriting: it shows the very same ${N * N} characters printed in a standard typeface, cell for cell in the same grid. Use it only to get every syllable's jamo structure exactly right (count the strokes of each vowel and each final consonant there), but draw every stroke in the handwriting of references 1 and 2 — never copy the printed letter shapes.`);
   const rows = sheet.rows.map((r, i) => `Row ${i + 1}: ${[...r].join(sheet.kind === "symbols" ? "   " : " ")}`);
   if (sheet.kind === "symbols") return [...head,
     "Each cell is ONE character box the size of one Hangul syllable. Write each character at the size and position it would have right after a Hangul syllable in a line of this handwriting — do NOT enlarge small marks to fill the cell:",
@@ -164,6 +180,8 @@ export function prompt(sheet, cfg, { format = "sheet", print = false } = {}) {
     "- single jamo ㅋ ㅎ ㅠ ㅜ ㄷ ㅇ: written on their own as in Korean chat (like ㅋㅋㅋ), about 70% of syllable height, centered.",
     "- heart ♡ and music note ♪: small hand-drawn outline, centered; parentheses, hyphen, colon, percent, slash: normal text size.",
     "- digits 0-9: about the height of a syllable, simple handwritten digits.",
+    // 격자가 6 보다 크면 부호 36자를 N² 칸에 돌려 채운다 — 같은 부호가 여러 칸에 나온다는 것을 알려 준다(6×6 문구는 그대로)
+    ...(N > 6 ? ["The same characters repeat in the same order across the sheet, so every character appears in several cells. Write every cell again by hand — never leave a repeated cell empty and never merge cells."] : []),
     "Cells row by row from the top, left to right within each row. Write exactly these characters:", ...rows].join("\n");
   const body = [...head,
     "Each cell holds ONE Hangul syllable, centered, upright, about the same size in every cell (roughly 60% of the cell height).",
@@ -178,21 +196,25 @@ export function prompt(sheet, cfg, { format = "sheet", print = false } = {}) {
   return body.join("\n");
 }
 
-// 돈 장부: 사용자가 승인한 상한(cap_usd)과 쓴 돈. 스크립트(openai)와 에이전트(내장 도구·MCP)가 같이 쓴다.
+// 돈 장부: 사용자의 승인 기록(approved_at · note · approvals)과 쓴 돈(spent). 스크립트(openai)와 에이전트(내장 도구·MCP)가 같이 쓴다.
+//   금액 한도는 없다(지시서 11 — 사용자가 없앴다). 예전 폴더의 ledger.json 에 남은 한도 칸(cap_usd · cap_sheets)은 지우지 않고 읽지도 않는다.
 export const ledgerFile = (dir) => P(dir, "ledger.json");
-export const ledger = (dir) => readJson(ledgerFile(dir), { cap_usd: 0, approved_at: null, note: "", spent: [] });
-// 음수는 세지 않는다 — 장부를 "정정"하려고 음수를 적어 상한 여유를 늘리는 길을 막는다(spend 도 음수를 거절한다)
+export const ledger = (dir) => readJson(ledgerFile(dir), { approved_at: null, note: "", spent: [] });
+// 음수는 세지 않는다 — 장부를 "정정"하려고 음수를 적는 길을 막는다(spend 도 음수를 거절한다)
 export const spentUsd = (l) => +l.spent.reduce((s, x) => s + Math.max(0, x.usd || 0), 0).toFixed(4);
 export const sheetsUsed = (l) => l.spent.filter((x) => x.state !== "failed").length;
-export function canSpend(dir, usd) {
+// 그려도 되는가(돈이 나가도 되는가): 금액이 아니라 "사용자의 승인 기록이 있는가"로만 정한다 — check · spend · openai 가 같이 쓴다.
+export function canSpend(dir) {
   const l = ledger(dir);
-  const left = +((l.cap_usd || 0) - spentUsd(l)).toFixed(4);
-  const sheetsLeft = l.cap_sheets != null ? l.cap_sheets - sheetsUsed(l) : null;
-  const base = { left, cap: l.cap_usd, spent: spentUsd(l), sheetsLeft };
-  // 승인 기록이 없으면 0원짜리(Codex 내장 도구)도 멈춘다 — 장당 0 으로 적는 길이 승인 없이 열리지 않게
-  if (!l.approved_at) return { ...base, ok: false, reason: "승인 기록이 없다(approve 를 한 번도 안 함)" };
-  if (sheetsLeft != null && sheetsLeft < 1) return { ...base, ok: false, reason: `승인한 장 수(${l.cap_sheets}장)를 다 썼다` };
-  if (usd > left + 1e-9) return { ...base, ok: false, reason: `남은 돈 ${left} USD < 이번 ${usd} USD — 상한(${l.cap_usd})을 넘는다` };
+  const base = { spent: spentUsd(l), sheets: sheetsUsed(l) };
+  // 승인 기록이 없으면 0원짜리(Codex 내장 도구)도 멈춘다 — 견적을 말하고 "예"를 듣기 전에는 그리지 않는다
+  if (!l.approved_at) return { ...base, ok: false, reason: "승인 기록이 없다(approve 를 한 번도 안 함) — 견적(estimate)을 사용자에게 말하고 승인을 받아 approve --note 로 적는다" };
+  // 격자를 바꾸면 장 수(값)가 바뀐다 — 새 견적을 말하고 다시 승인받기 전에는 멈춘다
+  const gc = l.grid_changes?.at(-1);
+  if (gc && gc.at > l.approved_at) return { ...base, ok: false, reason: `격자가 바뀌었다(${gc.from}×${gc.from} → ${gc.to}×${gc.to}, 장 ${gc.sheets_before} → ${gc.sheets_after}) — 새 견적(estimate)을 사용자에게 말하고 승인을 다시 받는다(approve --note)` };
+  // 다시 쓰기 장이 생기면(redo) 그 장 값도 새 견적이다 — 말하고 다시 승인받기 전에는 멈춘다(지시서 12). 같은 장 다시 받기(retry)는 막지 않는다
+  const rq = l.redo_quotes?.at(-1);
+  if (rq && rq.at > l.approved_at) return { ...base, ok: false, reason: `다시 쓰기 장이 생겼다(${rq.sheets.join(" ")} — ${rq.sheets.length}장 × ${rq.price} = ${rq.usd} USD) — 이 새 견적을 사용자에게 말하고 승인을 다시 받는다(approve --note)` };
   return { ...base, ok: true };
 }
 export function recordSpend(dir, row) {
@@ -204,3 +226,11 @@ export function recordSpend(dir, row) {
 
 // 받은 장(inbox/<id>.png)
 export const inboxFile = (dir, id) => P(dir, "inbox", `${id}.png`);
+
+// ---- 치운 그림(inbox/rejected/)과 시도 번호. 장 검사에서 떨어진 그림은 retry · grid --down 이 여기로 옮기고 log.json 에 적는다.
+//   시도 번호 = 1 + 그 장 · 그 격자의 치운 그림 수. 보낼 때 쓸 키(idempotency key)는 <작업 폴더 이름>-<장>-g<N>-<시도> —
+//   격자를 낮춘 뒤의 s01 이 예전 s01 과 같은 키를 쓰면 장부에 한 번만 적히고 서버가 예전 그림을 돌려주므로 키에 격자를 넣는다.
+export const rejectedDir = (dir) => P(dir, "inbox", "rejected");
+export const rejectedLog = (dir) => readJson(P(dir, "inbox", "rejected", "log.json"), { note: "장 검사에서 떨어져 치운 그림(retry · grid --down). 시도 번호는 이 목록으로 센다 — 지우지 않는다", rejected: [] });
+export const attemptOf = (dir, id, N) => 1 + rejectedLog(dir).rejected.filter((x) => x.sheet === id && x.grid === N).length;
+export const jobKey = (dir, id, N, attempt) => `${path.basename(path.resolve(dir))}-${id}-g${N}-${attempt}`;

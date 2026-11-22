@@ -1,13 +1,17 @@
 #!/usr/bin/env node
 // 모두의 폰트 스킬(modu-font) 명령 하나: node scripts/hf.mjs <명령> <작업 폴더> [옵션]
-//   init · latin · drafts · pick · plan · jobs · status · estimate · approve · check · spend · openai · cut · redo · glyphs · bold
-// 돈이 드는 명령은 openai 하나뿐이고, 장부(ledger.json)의 상한 안에서만 돈다. 에이전트가 내장 도구·MCP 로 그릴 때도 check → spend 로 같은 장부를 쓴다.
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+//   init · latin · drafts · pick · grid · plan · jobs · status · estimate · approve · check · spend · openai · cut · retry · review · redo · compare · preview · glyphs · bold
+// 돈이 드는 명령은 openai 하나뿐이고, 사용자의 승인 기록(ledger.json — approve)이 있어야 돈다. 금액 한도는 없다(지시서 11). 에이전트가 내장 도구·MCP 로 그릴 때도 check → spend 로 같은 장부에 적는다.
+// 격자: 한국어 모드의 본문 장 · 부호 장 · 다시 쓰기 장은 그 폰트의 격자 N×N(font.json grid — 견본을 재서 14 또는 12, 첫 장이 실패하면 낮춘다). 영문 장과 일본어 모드는 6×6 그대로.
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import {
-  KANA, LATIN, LATIN_GUIDE, P, SKILL, canSpend, config, die, inboxFile, isKanji, isLatin, isLatinSheet, isMainSheet, jisKanji, latinSheets, ledger, ledgerFile, loadSharp,
-  orderedHangul, scriptOf, prompt, readJson, recordSpend, sheetsOf, sheetsUsed, spentUsd, writeJson,
+  GRIDS, GRID_BOUND, KANA, LATIN, LATIN_GUIDE, P, SKILL, attemptOf, canSpend, config, die, gridOfFont, gridOfSheet, inboxFile, isKanji, isLatin, isLatinSheet, isMainSheet, jisKanji, jobKey, latinSheets, ledger, ledgerFile, loadSharp,
+  orderedHangul, rcParse, rejectedDir, rejectedLog, scriptOf, prompt, readJson, recordSpend, sheetsOf, sheetsUsed, spentUsd, writeJson,
 } from "./lib.mjs";
+import { measureSample, pickGrid } from "./pickgrid.mjs";
+import { checkSheet } from "./sheetcheck.mjs";
 
 const argv = process.argv.slice(2);
 const [cmd, dirArg, ...rest] = argv;
@@ -17,7 +21,7 @@ for (let i = 0; i < rest.length; i++) {
   else pos.push(rest[i]);
 }
 const HELP = () => readFileSync(path.join(SKILL, "references", "commands.md"), "utf8");
-const KNOWN = "init latin drafts pick plan jobs status estimate approve check spend openai cut review redo compare preview glyphs bold".split(" ");
+const KNOWN = "init latin drafts pick grid plan jobs status estimate approve check spend openai cut retry review redo compare preview glyphs bold".split(" ");
 if (cmd === "help" || cmd === "--help" || cmd === "-h") { console.log(HELP()); process.exit(0); }
 if (!cmd) { console.log(HELP()); process.exit(1); }
 if (!KNOWN.includes(cmd)) die(`모르는 명령: ${cmd} — 명령 목록은 node scripts/hf.mjs help`);
@@ -31,14 +35,16 @@ if (cmd !== "init") {
 const num = (v, name) => { const n = Number(v); if (v === true || v == null || v === "" || !Number.isFinite(n) || n < 0) die(`${name} 은 0 이상의 숫자여야 한다(받은 값: ${v === true ? "없음" : v})`); return n; };
 const esc = (t) => String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 const chunk = (a, n) => Array.from({ length: Math.ceil(a.length / n) }, (_, i) => a.slice(i * n, i * n + n));
-const rowsOf = (cells) => chunk(cells, 6).map((r) => r.join(""));
+const rowsOf = (cells, N = 6) => chunk(cells, N).map((r) => r.join(""));
+const isKo = (cfg) => (cfg.script ?? "ko") === "ko";
+const sid = (i) => String(i).padStart(2, "0");
 
-// 빈 6×6 격자(첫 장의 형식 참조). 하늘색 선 — cut 이 이 색으로 격자를 찾는다.
-async function blankGrid(file, size = 1024, cells = null, font = scriptOf(null).font, { guides = false } = {}) {
+// 빈 N×N 격자(첫 장의 형식 참조 — 기본 6×6). 하늘색 선 — cut 이 이 색으로 격자를 찾는다. 안내선(guides)은 영문 장(6×6)에서만 쓴다.
+async function blankGrid(file, size = 1024, cells = null, font = scriptOf(null).font, { guides = false, N = 6 } = {}) {
   const sharp = await loadSharp();
-  const m = Math.round(size * 0.03), s = (size - 2 * m) / 6;
+  const m = Math.round(size * 0.03), s = (size - 2 * m) / N;
   let lines = "";
-  for (let i = 0; i <= 6; i++) {
+  for (let i = 0; i <= N; i++) {
     const v = (m + i * s).toFixed(1);
     lines += `<line x1="${v}" y1="${m}" x2="${v}" y2="${size - m}"/><line x1="${m}" y1="${v}" x2="${size - m}" y2="${v}"/>`;
   }
@@ -52,7 +58,7 @@ async function blankGrid(file, size = 1024, cells = null, font = scriptOf(null).
     }
     lines += `</g><g stroke="#a9d3f5">${g}`;
   }
-  const text = cells ? cells.map((c, k) => `<text x="${(m + (k % 6 + 0.5) * s).toFixed(1)}" y="${(m + (Math.floor(k / 6) + 0.5) * s + s * 0.18).toFixed(1)}" text-anchor="middle" font-size="${Math.round(s * 0.55)}" font-family="${font}" fill="#111">${esc(c)}</text>`).join("") : "";
+  const text = cells ? cells.map((c, k) => `<text x="${(m + (k % N + 0.5) * s).toFixed(1)}" y="${(m + (Math.floor(k / N) + 0.5) * s + s * 0.18).toFixed(1)}" text-anchor="middle" font-size="${Math.round(s * 0.55)}" font-family="${font}" fill="#111">${esc(c)}</text>`).join("") : "";
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}"><rect width="100%" height="100%" fill="#fff"/><g stroke="#8ec5f0" stroke-width="3">${lines}</g>${text}</svg>`;
   mkdirSync(path.dirname(file), { recursive: true });
   await sharp(Buffer.from(svg)).png().toFile(file);
@@ -83,6 +89,14 @@ async function cmdInit() {
   if (opt.count != null && !(Number(opt.count) >= 1)) die("--count 는 1 이상의 숫자(예: 500, 2350)");
   const script = { korean: "ko", japanese: "ja" }[String(opt.script)] ?? (opt.script && opt.script !== true ? String(opt.script) : "ko");
   if (!["ko", "ja"].includes(script)) die("--script 는 ko·korean(한글, 기본) 또는 ja·japanese(일본어)");
+  // --grid <N>: 한국어 모드에서 사용자가 격자를 정한다(안 주면 견본을 재서 정한다). 일본어 모드와 영문 장은 6×6 고정
+  let gridUser = null;
+  if (opt.grid != null) {
+    if (script === "ja") die("--grid 는 한국어 모드에서만 쓴다 — 일본어 모드는 6×6 고정이다(한자 · 가나는 작은 칸으로 재 본 적이 없다)");
+    if (opt.base) die("--grid 는 --base 와 같이 쓰지 않는다 — 바탕 글자는 그리지 않고 영문 장은 6×6 고정이다");
+    gridUser = Number(opt.grid);
+    if (!GRIDS.includes(gridUser)) die(`--grid 는 ${[...GRIDS].reverse().join(" · ")} 가운데 하나(받은 값: ${opt.grid === true ? "없음" : opt.grid})`);
+  }
   // 일본어 한자 목록: --chars <파일>(차례 그대로, 한자만) 또는 --set jis1(기본, 2,965자)·jis12(6,355자)
   let kanji = null;
   if (script === "ja") {
@@ -119,14 +133,22 @@ async function cmdInit() {
     ...(opt.latin ? { latin: true } : {}),
     ...(base ? { base } : {}),
   };
+  // 격자(한국어 모드의 새 작업 폴더): 견본이 있으면 재서 정하고, 없으면 6 으로 두었다가 견본이 정해질 때(pick · jobs) 정한다. --grid 면 그 값(잰 값은 적어 둔다)
+  if (script === "ko" && !base) {
+    const sharp = await loadSharp();
+    const measure = opt.sample ? await measureSample(sharp, path.resolve(opt.sample)) : null;
+    setGrid(cfg, gridDecision(gridUser, measure));
+  }
   writeJson(P(dir, "font.json"), cfg);
   if (kanji) writeFileSync(P(dir, cfg.kanji_file), kanji.join("") + "\n", "utf8");
   for (const d of ["style", "jobs", "inbox", "cells", "review", "out"]) mkdirSync(P(dir, d), { recursive: true });
-  await blankGrid(P(dir, "style", "blank-grid.png"));
+  await blankGrid(P(dir, "style", "blank-grid.png"), 1024, null, undefined, { N: gridOfFont(cfg) });
   if (opt.sample) {
     // JPG 등으로 받아도 진짜 PNG 로 바꿔 둔다(이름만 .png 인 JPG 를 앱이 거절하지 않게)
     const sharp = await loadSharp();
     await sharp(path.resolve(opt.sample)).png().toFile(P(dir, "style", "sample.png"));
+    // 견본은 다시 저장되므로 sha256 이 바뀐다 — 사용자가 준 원래 파일의 sha256 도 적어 둔다(서버에 이미 올린 견본인지 원래 파일로 맞춰 볼 수 있게 — references/backend-agent.md 의 uploaded.json)
+    const c2 = readJson(P(dir, "font.json")); c2.sample_source_sha256 = sha256Of(path.resolve(opt.sample)); c2.sample_sha256 = sha256Of(P(dir, "style", "sample.png")); writeJson(P(dir, "font.json"), c2);
     if (Math.max(sampleMeta.width, sampleMeta.height) < 800) console.log(`경고: 견본이 작다(${sampleMeta.width}×${sampleMeta.height}) — 글씨 모양이 덜 전해진다. 더 큰 원본이 있으면 그걸 쓴다`);
   }
   if (!existsSync(P(dir, "errors.json"))) writeJson(P(dir, "errors.json"), {});
@@ -134,6 +156,60 @@ async function cmdInit() {
   planSheets(cfg);
   console.log(`ok ${dir}\n- 설정 font.json (${script === "ja" ? "일본어 · " : ""}이름 ${cfg.family_ja ?? cfg.family_ko} / ${cfg.family_en}, 글씨 설명 "${cfg.style_text}")`);
   console.log(opt.sample ? "- 손글씨 견본 style/sample.png" : "- 손글씨 견본 없음 → drafts 로 시안을 그리거나 style/sample.png 를 넣는다");
+  if (cfg.grid) console.log(gridLine(cfg));
+}
+
+// ---- 격자 고르기(한국어 모드). font.json grid: { n, by(auto 자동 · user 사용자 · down 낮춤 · pending 견본 없음), why, measure(견본에서 잰 값), history(바뀐 이력) }
+//   규칙(임시 — 글씨체 다섯 개에서 나왔다): 견본의 획 굵기 ÷ 글자 높이 < 0.09 → 14, 그 밖 → 12, 재지 못하면 12(지시서 10 — 09b 까지 6). 견본이 아직 없으면 6(pending, 재면 바뀐다). 격자 정보가 없는 옛 작업 폴더는 6 이고 건드리지 않는다.
+function gridDecision(user, measure) {
+  const p = measure ? pickGrid(measure) : null;
+  // tilt_deg: 견본에서 찾아 되돌린 기울기(°, 양수 = 시계 방향 · 0 = 되돌리지 않음). stroke_px 는 실수(화소 사이를 이어 잰 값)
+  const m = measure ? { ratio: measure.ratio, stroke_px: measure.stroke, glyph_height_px: measure.glyph_height, lines: measure.line_count, tilt_deg: measure.tilt_deg ?? 0, class: p.cls, picked: p.n, size: [measure.width, measure.height], ...(measure.error ? { error: measure.error } : {}) } : null;
+  if (user != null) return { n: user, by: "user", why: `사용자가 정했다(${user}×${user})${p ? (p.measured ? ` — 견본을 잰 값으로는 ${p.n}×${p.n}(획 ÷ 높이 ${measure.ratio})` : " — 견본은 재지 못했다") : ""}`, measure: m };
+  if (!measure) return { n: 6, by: "pending", why: "견본이 아직 없다 — 6×6 으로 두고, 견본이 정해지면(pick · jobs) 재서 정한다", measure: null };
+  return { n: p.n, by: "auto", why: p.why, measure: m };
+}
+function setGrid(cfg, d) {
+  const history = [...(cfg.grid?.history ?? []), { at: new Date().toISOString(), n: d.n, by: d.by, why: d.why }];
+  cfg.grid = { n: d.n, by: d.by, why: d.why, ...(d.measure !== undefined ? { measure: d.measure } : cfg.grid?.measure !== undefined ? { measure: cfg.grid.measure } : {}), history };
+}
+const gridLine = (cfg) => { const g = cfg.grid, N = g.n, down = GRIDS.slice(GRIDS.indexOf(N)); return `- 격자 ${N}×${N} — ${g.why}${g.by === "pending" ? "" : down.length > 1 ? `. 첫 장이 장 검사에 두 번 떨어지면 한 단계 낮춘다(${down.join(" → ")}) — 임시 규칙` : ". 6×6 은 더 낮출 격자가 없다"}`; };
+// 본문 장을 하나라도 받았거나(치운 것 포함) 형식 참조가 있으면 격자를 견본으로 다시 정하지 않는다
+const koSheets = () => sheetsOf(dir).filter((s) => !isLatinSheet(s));
+const gridStarted = () => koSheets().some((s) => existsSync(inboxFile(dir, s.id))) || rejectedLog(dir).rejected.length > 0 || existsSync(P(dir, "style", "format.png"));
+// ---- 첫 장 잠금(한국어 모드): 첫 본문 장이 형식 참조(style/format.png)가 되기 전에는 다른 한국어 장(본문 · 부호 · 다시 쓰기)으로 돈이 나가지 않게 — jobs · spend · openai 가 같이 쓴다.
+//   잠겨 있으면 { first 첫 본문 장, got 받았는가, todo 먼저 할 일 }, 아니면 null. 영문 장 · drafts · 일본어 모드 · 바탕 글자(--base) 폴더는 잠그지 않는다.
+const firstMain = () => sheetsOf(dir).find((s) => isMainSheet(s) && !isRedo(s));
+function firstGate(cfg) {
+  if (!isKo(cfg) || existsSync(P(dir, "style", "format.png"))) return null;
+  const first = firstMain();
+  if (!first) return null;
+  const got = existsSync(inboxFile(dir, first.id)), cm = got ? readJson(P(dir, "cells", first.id, "cells.json"), null) : null;
+  const todo = !got ? `먼저 첫 장(${first.id})을 그려 받고 cut 한다` : !cm ? `먼저 cut <dir> ${first.id} 로 첫 장을 자르고 장 검사를 본다` : cm.next?.text ? `먼저 첫 장의 다음 할 일(cells/${first.id}/cells.json 의 next): ${cm.next.text}` : `먼저 cut <dir> ${first.id} 를 다시 돌려 첫 장의 다음 할 일을 본다`;
+  return { first, got, todo };
+}
+// 첫 본문 장 말고 받은 한국어 장(본문 · 부호 · 다시 쓰기) — 하나라도 있으면 격자를 못 바꾼다(돈 주고 받은 장이 버려지지 않게. 한 폰트는 한 격자)
+const otherKoReceived = () => { const first = firstMain(); return koSheets().filter((s) => s.id !== first?.id && existsSync(inboxFile(dir, s.id))); };
+// 견본(style/sample.png)을 재서 격자를 정한다 — pick 과 jobs(견본을 손으로 넣은 경우)가 부른다. 사용자가 정한 격자는 그대로 두고 잰 값만 적는다
+async function gridFromSample(cfg) {
+  if (!isKo(cfg) || cfg.base || !cfg.grid || !existsSync(P(dir, "style", "sample.png"))) return;
+  const sharp = await loadSharp();
+  const d = gridDecision(cfg.grid.by === "user" ? cfg.grid.n : null, await measureSample(sharp, P(dir, "style", "sample.png")));
+  if (cfg.grid.by === "user") { cfg.grid.measure = d.measure; writeJson(P(dir, "font.json"), cfg); console.log(`- 격자 ${cfg.grid.n}×${cfg.grid.n}(사용자가 정함) 그대로 — 견본을 잰 값은 font.json 에 적었다(획 ÷ 높이 ${d.measure.ratio ?? "못 잼"})`); return; }
+  if (gridStarted()) { console.log(`- 이미 받은 장이 있어 격자(${cfg.grid.n}×${cfg.grid.n})는 그대로 둔다 — 한 폰트는 한 격자`); return; }
+  const before = cfg.grid.n, sheetsBefore = sheetsOf(dir).length;
+  setGrid(cfg, d);
+  writeJson(P(dir, "font.json"), cfg);
+  await applyGrid(cfg, before);
+  console.log(gridLine(cfg));
+  if (cfg.grid.n !== before) noteGridChange(before, cfg.grid.n, sheetsBefore, sheetsOf(dir).length); // 장 수가 바뀌었다 — 그 전에 받은 승인으로는 check 가 멈춘다
+}
+// 격자가 정해졌거나 바뀐 뒤: 장 목록 · 빈 격자를 그 격자로 다시 만들고, 안 받은 묶음(jobs/<장>)은 지운다(예전 격자의 프롬프트가 남지 않게)
+async function applyGrid(cfg, before) {
+  for (const s of koSheets()) if (!existsSync(inboxFile(dir, s.id))) rmSync(P(dir, "jobs", s.id), { recursive: true, force: true });
+  if (before !== cfg.grid.n) { const all = readJson(P(dir, "sheets.json")); all.sheets = all.sheets.filter((s) => isLatinSheet(s) || !isRedo(s)); writeJson(P(dir, "sheets.json"), all); } // 예전 격자의 다시 쓰기 장은 버린다
+  planSheets(cfg);
+  await blankGrid(P(dir, "style", "blank-grid.png"), 1024, null, undefined, { N: gridOfFont(cfg) });
 }
 
 function planSheets(cfg) {
@@ -169,16 +245,19 @@ function planSheetsKo(cfg) {
   const order = orderedHangul();
   const want = order.slice(0, Math.min(2350, cfg.count));
   const extra = order.slice(want.length); // 마지막 장 빈 칸은 목표 다음 글자로 채운다 — 같은 값에 글자가 더 생긴다
-  const sheets = chunk(want, 36).map((cells, i) => {
+  const N = gridOfFont(cfg), per = N * N; // 한 장 N×N 칸(옛 작업 폴더는 6×6 = 36칸)
+  const sheets = chunk(want, per).map((cells, i) => {
     const n = cells.length;
-    while (cells.length < 36) cells.push(extra.length ? extra.shift() : cells[cells.length % n]); // 남은 글자가 없으면(2,350자) 같은 장 글자를 돌려 쓴다(겹친 칸은 앞 것만 씀)
-    return { id: `s${String(i + 1).padStart(2, "0")}`, kind: "hangul", rows: rowsOf(cells), spell: i >= 12 };
+    while (cells.length < per) cells.push(extra.length ? extra.shift() : cells[cells.length % n]); // 남은 글자가 없으면(2,350자) 같은 장 글자를 돌려 쓴다(겹친 칸은 앞 것만 씀)
+    // 자모 풀이는 글자 차례 433번째 이후 글자가 든 장부터(드문 글자) — 6×6 이면 0.5.0 과 같은 13번째 장부터
+    return { id: `s${String(i + 1).padStart(2, "0")}`, kind: "hangul", rows: rowsOf(cells, N), spell: (i + 1) * per > 432 };
   });
   const SYM = scriptOf(cfg).symbols;
-  sheets.push({ id: "sym", kind: "symbols", rows: rowsOf(SYM) });
+  // 부호 장도 같은 격자: 36자를 N² 칸에 돌려 채운다(같은 부호가 여러 칸 — 쓸 수 있는 첫 칸을 쓴다). 6×6 이면 36자 한 번씩
+  sheets.push({ id: "sym", kind: "symbols", rows: rowsOf(Array.from({ length: per }, (_, i) => SYM[i % SYM.length]), N) });
   const old = readJson(P(dir, "sheets.json"), { sheets: [] }).sheets.filter((s) => s.kind === "redo" || s.redo);
   writeJson(P(dir, "sheets.json"), { note: "modu-font 장 목록 — redo 장은 redo 명령이 더한다", needed: want.join("") + SYM.join(""), sheets: [...sheets, ...old] });
-  console.log(`- 장 ${sheets.length}개(한글 ${want.length}자 ${sheets.length - 1}장 + 부호·자모·숫자 1장)`);
+  console.log(`- 장 ${sheets.length}개(격자 ${N}×${N} · 한글 ${want.length}자 ${sheets.length - 1}장 + 부호·자모·숫자 1장)`);
 }
 
 // 일본어: 가나 장(kNN, 171자 5장) → 한자 장(sNN, 목록 차례 count 자) → 부호 장(sym). 한자가 든 장은 활자 구조 참조(ref-3)를 늘 넣는다.
@@ -275,6 +354,7 @@ async function cmdPick() {
     const cfg = config(dir);
     if (opt.style && opt.style !== true) { cfg.style_text = opt.style; writeJson(P(dir, "font.json"), cfg); }
     console.log(`ok style/sample.png (견본 통째로) · 글씨 설명 "${cfg.style_text}"`);
+    await gridFromSample(cfg);
     return;
   }
   const q = Number(opt.quad);
@@ -286,17 +366,50 @@ async function cmdPick() {
   cfg.style_text = opt.style ?? DRAFT_STYLES[q - 1][1];
   writeJson(P(dir, "font.json"), cfg);
   console.log(`ok style/sample.png (사분면 ${q}) · 글씨 설명 "${cfg.style_text}"`);
+  await gridFromSample(cfg);
 }
 
 // 다시 쓰기 장: 본문(kind redo)과 부호(kind symbols + redo: true) 둘 다
 const isRedo = (s) => s.kind === "redo" || !!s.redo;
+const sha256Of = (file) => createHash("sha256").update(readFileSync(file)).digest("hex");
 const pending = (ids) => sheetsOf(dir).filter((s) => (ids.length ? ids.includes(s.id) : true) && !existsSync(inboxFile(dir, s.id)));
+
+// 다시 쓰기 장(본문 · 부호 다시 쓰기)의 형식 참조: 같은 격자의 받은 본문 장 가운데 장 검사 "됨"이고 errors.json 의 틀린 칸이 가장 적은 장(같으면 앞 장).
+//   "*" 로 버린 장은 뺀다. 후보가 없으면 null(→ 지금처럼 style/format.png). --format <장> 이면 그 장(받은 장 · 같은 격자여야 한다).
+//   까닭(3단계 — 한 번뿐인 비교): 실수가 있던 첫 장을 형식 참조로 쓴 다시 쓰기 장 둘은 ㅁ 이 모두 둥글었고, 실수 없는 둘째 장을 쓴 장은 상자 꼴이 늘었다.
+function redoFormatRef(N) {
+  const errors = readJson(P(dir, "errors.json"), {});
+  if (opt.format != null) {
+    const id = String(opt.format), s = sheetsOf(dir).find((x) => x.id === id);
+    if (!s || isLatinSheet(s)) die(`--format ${id}: 그런 한국어 장이 없다`);
+    if (!existsSync(inboxFile(dir, id))) die(`--format ${id}: 아직 안 받은 장이다`);
+    if (gridOfSheet(s) !== N) die(`--format ${id}: 격자가 다르다(${gridOfSheet(s)}×${gridOfSheet(s)} — 이 장은 ${N}×${N})`);
+    return id;
+  }
+  const bad = (id) => (errors[id] && typeof errors[id] === "object" ? Object.keys(errors[id]).length : 0);
+  const cand = sheetsOf(dir).filter((x) => isMainSheet(x) && !isRedo(x) && gridOfSheet(x) === N && errors[x.id] !== "*" && existsSync(inboxFile(dir, x.id)) && readJson(P(dir, "cells", x.id, "cells.json"), null)?.check?.verdict === "됨");
+  if (!cand.length) return null;
+  return cand.reduce((a, b) => (bad(b.id) < bad(a.id) ? b : a)).id; // 같으면 앞 장(reduce 는 앞 것을 남긴다)
+}
 
 async function cmdJobs() {
   const cfg = config(dir);
   if (!existsSync(P(dir, "style", "sample.png"))) die("style/sample.png 가 없다(init --sample, 또는 drafts → pick)");
+  if (cfg.grid?.by === "pending") await gridFromSample(cfg); // 견본을 손으로 넣은 경우 — 격자를 아직 못 정했으면 지금 재서 정한다
   const fmt = existsSync(P(dir, "style", "format.png")) ? "sheet" : "blank";
+  // 형식 참조가 된 장의 격자(옛 format.json 에는 없다 → 그 장의 줄 수, 그것도 없으면 6)
+  const fj = readJson(P(dir, "style", "format.json"), null), fmtN = fmt === "sheet" ? fj?.n ?? (sheetsOf(dir).find((x) => x.id === fj?.sheet)?.rows.length ?? 6) : null;
+  // 빈 격자: 폰트의 격자는 style/blank-grid.png, 다른 격자의 장(손으로 고친 장 목록 등)은 style/blank-grid-<N>.png 를 그때 만든다
+  const blankFor = async (N) => { const name = N === gridOfFont(cfg) ? "blank-grid.png" : `blank-grid-${N}.png`; if (!existsSync(P(dir, "style", name))) await blankGrid(P(dir, "style", name), 1024, null, undefined, { N }); return name; };
   let list = pending(pos);
+  // 첫 장 잠금: 첫 본문 장을 받았는데 형식 참조가 없으면(아직 안 잘랐거나 장 검사를 통과하지 못했다) 다른 한국어 장은 묶지 않고 멈춘다 — 떨어진 격자로 다음 장에 돈이 나가지 않게.
+  //   영문 장은 그대로(자기 형식 참조 규칙이 따로 있다) — 다만 옵션 없이 부른 jobs 는 본문 차례라 영문만 따로 묶지 않는다. 받기 전의 jobs --all 은 예전처럼 모두 묶는다(묶음만 생긴다 — spend · openai 가 막는다).
+  const gate = firstGate(cfg), held = gate?.got ? list.filter((s) => !isLatinSheet(s)) : [];
+  const heldMsg = () => `첫 장(${gate.first.id})이 아직 통과하지 못했다(형식 참조 style/format.png 없음) — 다른 한국어 장(${held.map((s) => s.id).join(" ")})은 묶지 않는다. ${gate.todo}`;
+  if (held.length) {
+    list = pos.length || opt.all ? list.filter(isLatinSheet) : [];
+    if (!list.length) die(heldMsg());
+  }
   // 첫 장을 받아 자르고 확인하기 전에는 첫 한글 장 하나만 묶는다 — 나머지는 그 장을 형식 참조로 다시 만든다
   const firstOnly = fmt === "blank" && !pos.length && !opt.all && list.some(isMainSheet);
   if (firstOnly) list = [list.find(isMainSheet)];
@@ -305,21 +418,35 @@ async function cmdJobs() {
   const latFirst = latFmt === "blank" && !pos.length && !opt.all && list.filter(isLatinSheet).length > 1;
   if (latFirst) { const first = list.find(isLatinSheet); list = list.filter((s) => !isLatinSheet(s) || s === first); }
   if (list.some(isLatinSheet) && !existsSync(P(dir, "style", "latin-grid.png"))) await blankGrid(P(dir, "style", "latin-grid.png"), 1024, null, undefined, { guides: true });
+  const koRefs = []; // 한국어 장마다 실제로 쓴 형식 참조 — 끝 줄 안내에
   for (const s of list) {
     const d = P(dir, "jobs", s.id);
     mkdirSync(d, { recursive: true });
     copyFileSync(P(dir, "style", "sample.png"), path.join(d, "ref-1.png"));
-    const lat = isLatinSheet(s), f = lat ? latFmt : fmt;
-    copyFileSync(P(dir, "style", lat ? (f === "sheet" ? "latin-format.png" : "latin-grid.png") : f === "sheet" ? "format.png" : "blank-grid.png"), path.join(d, "ref-2.png"));
+    // 형식 참조로 받은 첫 장을 쓰는 것은 그 장과 격자가 같은 장만 — 다르면 이 장 격자의 빈 격자
+    const lat = isLatinSheet(s), N = gridOfSheet(s);
+    // 다시 쓰기 장은 틀린 칸이 가장 적은 "됨" 본문 장을 형식 참조로(--format 으로 고를 수 있다) — 그런 장이 없으면 지금처럼
+    const rf = !lat && isRedo(s) && fmt === "sheet" ? redoFormatRef(N) : null;
+    const f = lat ? latFmt : rf || (fmt === "sheet" && fmtN === N) ? "sheet" : "blank";
+    copyFileSync(rf ? inboxFile(dir, rf) : P(dir, "style", lat ? (f === "sheet" ? "latin-format.png" : "latin-grid.png") : f === "sheet" ? "format.png" : await blankFor(N)), path.join(d, "ref-2.png"));
     const refs = ["ref-1.png", "ref-2.png"];
-    if (s.print && !lat) { await blankGrid(path.join(d, "ref-3.png"), 1024, [...s.rows.join("")], scriptOf(cfg).font); refs.push("ref-3.png"); }
+    if (s.print && !lat) { await blankGrid(path.join(d, "ref-3.png"), 1024, [...s.rows.join("")], scriptOf(cfg).font, { N }); refs.push("ref-3.png"); }
     writeFileSync(path.join(d, "prompt.txt"), prompt(s, cfg, { format: f, print: !!s.print && !lat }) + "\n", "utf8");
-    writeJson(path.join(d, "job.json"), { id: s.id, kind: s.kind, rows: s.rows, refs, out: `inbox/${s.id}.png`, size: "정사각, 긴 변 1500px 이상(2048 권장)" });
+    // n 격자 · attempt 시도 번호(치운 그림 수 + 1) · key 보낼 때 쓸 키(spend --job, MCP idempotency_key) — 다시 받는 장은 키가 달라야 새 그림이 온다
+    const attempt = attemptOf(dir, s.id, N);
+    // ref_sha256: 참조 그림마다 sha256 — 서버에 이미 올린 그림이면(style/uploaded.json, 에이전트가 적는다) 그 주소를 다시 쓴다. format_ref: 다시 쓰기 장이 형식 참조로 쓴 장
+    const ref_sha256 = Object.fromEntries(refs.map((r) => [r, sha256Of(path.join(d, r))]));
+    writeJson(path.join(d, "job.json"), { id: s.id, kind: s.kind, rows: s.rows, refs, out: `inbox/${s.id}.png`, size: "정사각, 긴 변 1500px 이상(2048 권장)", n: N, attempt, key: jobKey(dir, s.id, N, attempt), ref_sha256, ...(rf ? { format_ref: rf } : {}) });
+    if (rf) console.log(`- ${s.id}: 형식 참조 = ${rf}${opt.format != null ? "(--format)" : "(틀린 칸이 가장 적은 '됨' 본문 장)"}`);
+    if (!lat) koRefs.push(rf ? `받은 장 ${rf}` : f === "sheet" ? "처음 받은 장" : "빈 격자");
   }
-  const refNote = [list.some((s) => !isLatinSheet(s)) ? (fmt === "sheet" ? "처음 받은 장" : "빈 격자") : null, list.some(isLatinSheet) ? `영문 ${latFmt === "sheet" ? "처음 받은 영문 장" : "안내선 빈 격자"}` : null].filter(Boolean).join(" · ");
-  console.log(`ok jobs ${list.length}장${refNote ? `(형식 참조: ${refNote})` : ""}: ${list.map((s) => s.id).join(" ") || "없음 — 모두 받음"}`);
+  const refNote = [koRefs.length ? [...new Set(koRefs)].join(" · ") : null,list.some(isLatinSheet) ? `영문 ${latFmt === "sheet" ? "처음 받은 영문 장" : "안내선 빈 격자"}` : null].filter(Boolean).join(" · ");
+  const tag = (s) => { const a = attemptOf(dir, s.id, gridOfSheet(s)); return a > 1 ? `${s.id}(시도 ${a})` : s.id; };
+  console.log(`ok jobs ${list.length}장${refNote ? `(형식 참조: ${refNote})` : ""}: ${list.map(tag).join(" ") || "없음 — 모두 받음"}`);
   if (firstOnly) console.log(`- 첫 장만 묶었다. 받아서 cut·확인한 뒤 jobs 를 다시 돌리면 나머지 ${pending([]).length - 1}장을 만든다(지금 다 만들려면 --all)`);
   if (latFirst) console.log("- 영문은 첫 장(L1)만 묶었다. 받아서 cut·확인한 뒤 jobs 를 다시 돌리면 나머지 영문 장이 그 장을 형식 참조로 만들어진다");
+  if (opt.all && gate && !gate.got && list.some((s) => !isLatinSheet(s) && s.id !== gate.first.id)) console.log(`- --all 은 묶음만 미리 만든 것이다. 첫 장(${gate.first.id})이 통과하기 전에는 첫 장만 그린다(다른 한국어 장은 spend · openai 가 멈춘다)`);
+  if (held.length) die(heldMsg()); // 영문 장만 묶었다 — 한국어 장은 첫 장이 통과한 뒤에
 }
 
 function cellState() {
@@ -328,9 +455,10 @@ function cellState() {
   for (const s of sheetsOf(dir)) {
     const cdir = P(dir, "cells", s.id);
     if (!existsSync(cdir)) continue;
+    if (errors[s.id] === "*") continue; // errors.json 에 "*" — 그 장을 통째로 버림(지시서 12)
     const meta = readJson(path.join(cdir, "cells.json"), { cells: [] });
     for (const c of meta.cells) {
-      if (c.empty) continue;
+      if (c.empty || c.skip) continue; // skip: 장 검사가 못 쓴다고 한 칸(못 쓰는 줄 · 안 된 장 · 경계 넘음) — 폰트에 쓰지 않고 redo 가 그 글자를 다시 쓰기 장으로 보낸다
       const mark = errors[s.id]?.[c.rc];
       if (mark === "?" || mark === "") continue;
       const ch = mark ?? c.ch;
@@ -349,63 +477,97 @@ function cmdStatus() {
   const need = [...all.needed];
   const miss = need.filter((c) => !got.has(c));
   const rows = all.sheets.map((s) => {
-    const recv = existsSync(inboxFile(dir, s.id)), cut = existsSync(P(dir, "cells", s.id, "cells.json"));
-    return `${s.id.padEnd(5)} ${s.kind.padEnd(8)} ${recv ? "받음" : "  - "} ${cut ? "자름" : "  - "}`;
+    const recv = existsSync(inboxFile(dir, s.id)), cm = readJson(P(dir, "cells", s.id, "cells.json"), null), cut = !!cm;
+    const N = gridOfSheet(s), a = attemptOf(dir, s.id, N), ck = cm?.check;
+    const verdict = ck ? ` ${ck.verdict}${ck.unusable_rows?.length ? `(못 쓰는 줄 ${ck.unusable_rows.join(",")})` : ck.verdict === "안 됨" && ck.reason ? `(${ck.reason})` : ""}` : "";
+    return `${s.id.padEnd(5)} ${s.kind.padEnd(8)} ${recv ? "받음" : "  - "} ${cut ? "자름" : "  - "} ${N}×${N}${verdict}${a > 1 ? ` · 시도 ${a}` : ""}`;
   });
   console.log(rows.join("\n"));
   const l = ledger(dir);
-  console.log(`\n글자 ${need.length - miss.length}/${need.length} · 받을 장 ${pending([]).length} · 돈 ${spentUsd(l)}/${l.cap_usd} USD`);
+  console.log(`\n글자 ${need.length - miss.length}/${need.length} · 받을 장 ${pending([]).length} · 쓴 돈(장부) ${spentUsd(l)} USD${l.approved_at ? "" : " · 승인 기록 없음"}`);
   if (miss.length && miss.length <= 60) console.log(`없는 글자: ${miss.join("")}`);
+  for (const line of gridNotes(config(dir))) console.log(line);
 }
 
-function cmdEstimate() {
+// 치운 그림(다시 받은 장)과 그 그림에 든 돈 — 장부에서 --job 이 그 그림의 키와 같은 줄만 센다(다른 이름으로 적은 것은 알 수 없다)
+function rejectedSummary() {
+  const rej = rejectedLog(dir).rejected, l = ledger(dir);
+  const usd = +rej.reduce((s, x) => s + l.spent.filter((r) => r.job === x.key && r.state !== "failed").reduce((a, r) => a + Math.max(0, r.usd || 0), 0), 0).toFixed(4);
+  return { rej, usd };
+}
+// status · estimate 가 같이 보여 주는 줄: 격자와 근거 · 치운 그림 · 격자가 바뀐 뒤 승인이 필요한지
+function gridNotes(cfg) {
+  const out = [], { rej, usd } = rejectedSummary(), l = ledger(dir);
+  if (cfg.grid) out.push(`격자 ${cfg.grid.n}×${cfg.grid.n}(${{ auto: "자동", user: "사용자", down: "낮춤", pending: "견본 전" }[cfg.grid.by] ?? cfg.grid.by}) — ${cfg.grid.why}`);
+  if (rej.length) out.push(`치운 그림 ${rej.length}장(${rej.map((x) => `${x.sheet} ${x.grid}×${x.grid} 시도 ${x.attempt}`).join(" · ")}) · 그 그림에 든 돈 ${usd} USD(장부의 --job 이 키와 같은 것만)`);
+  const gc = l.grid_changes?.at(-1);
+  const rq = l.redo_quotes?.at(-1);
+  if (rq && (!l.approved_at || rq.at > l.approved_at)) out.push(`다시 쓰기 장(${rq.sheets.join(" ")})이 생긴 뒤 승인이 없다 — check · spend · openai 가 멈춘다. 새 견적(${rq.usd} USD)을 사용자에게 말하고 approve 를 다시 받는다`);
+  if (gc && (!l.approved_at || gc.at > l.approved_at)) out.push(`격자가 바뀐 뒤(${gc.from}×${gc.from} → ${gc.to}×${gc.to}, 장 ${gc.sheets_before} → ${gc.sheets_after}) 승인이 없다 — check 가 멈춘다. 새 견적을 사용자에게 말하고 approve 를 다시 받는다`);
+  return out;
+}
+
+function cmdEstimate({ newQuote = false } = {}) {
   const cfg = config(dir);
-  const price = Number(opt.price ?? cfg.price_usd);
+  // --price 로 준 장당 값은 font.json(price_usd)에 적어 둔다 — 그 뒤의 estimate · grid --down · openai 가 모두 그 값을 쓴다(서버 견적이 font.json 과 다를 때 한 번만 주면 된다)
+  if (opt.price != null) {
+    const p = num(opt.price, "--price");
+    if (p !== cfg.price_usd) { console.log(`장당 값 ${cfg.price_usd} → ${p} USD 를 font.json(price_usd)에 적었다 — 이 뒤의 견적(estimate · grid --down)과 openai 의 장부 값이 이 값을 쓴다`); cfg.price_usd = p; writeJson(P(dir, "font.json"), cfg); }
+  }
+  const price = Number(cfg.price_usd);
   const list = pending(pos);
   const usd = +(list.length * price).toFixed(2);
   const l = ledger(dir);
-  console.log(`견적: ${list.length}장 × ${price} USD = ${usd} USD (이미 쓴 돈 ${spentUsd(l)}, 승인 상한 ${l.cap_usd})`);
-  console.log("값은 font.json price_usd(또는 --price) 기준 어림이다. 실제 값은 쓰는 서비스의 가격표·견적(dry run)으로 확인한다.");
+  console.log(`견적: ${list.length}장 × ${price} USD = ${usd} USD (이미 쓴 돈 ${spentUsd(l)} USD — 장부)`);
+  // 견적을 사용자에게 말하고 "예"를 들으면 approve --note 로 적는다. 금액 한도는 없다 — 다시 받기 · 다시 쓰기 · 격자 낮추기는 그때마다 새 견적을 말한다
+  if (newQuote) console.log("격자가 바뀌어 새 견적이다 — 이 견적을 사용자에게 말하고 승인을 다시 받아 approve --note 로 적기 전에는 check · spend · openai 가 멈춘다");
+  const again = list.filter((s) => attemptOf(dir, s.id, gridOfSheet(s)) > 1);
+  if (again.length) console.log(`다시 받는 장(한 번 더): ${again.map((s) => `${s.id}(시도 ${attemptOf(dir, s.id, gridOfSheet(s))})`).join(" ")} — 위 장 수에 들어 있다`);
+  for (const line of gridNotes(cfg)) console.log(line);
+  console.log("값은 font.json price_usd 기준 어림이다. 실제 값은 쓰는 서비스의 가격표·견적(dry run)으로 확인한다 — 다르면 estimate <dir> --price <그 값> 을 한 번 돌린다(font.json 에 적혀 그 뒤로 그 값을 쓴다).");
 }
 
-// 승인: 금액 상한(--cap, 누적 USD)과/또는 장 수 상한(--sheets, 누적 장 — 장당 0원으로 적는 Codex 내장 도구용).
-// --note 에 사용자가 실제로 한 말을 적는다(장부만으로는 "예"를 들었는지 알 수 없으니 기록이라도 남긴다).
+// 승인: 견적을 들은 사용자가 "예"라고 한 기록. --note 에 사용자가 실제로 한 말을 적는다(장부만으로는 "예"를 들었는지 알 수 없으니 기록이라도 남긴다).
+//   금액 한도는 없다(지시서 11). 예전 옵션 --cap · --sheets 를 주면 무시한다고 한 줄 내고 승인만 적는다.
 function cmdApprove() {
-  if (opt.cap == null && opt.sheets == null) die('--cap <USD> 또는 --sheets <장 수> — 사용자가 직접 말한 금액·장 수만 넣는다');
-  const cap = opt.cap == null ? null : Number(opt.cap);
-  if (cap != null && !(cap > 0 && Number.isFinite(cap))) die("--cap 은 0 보다 큰 USD 숫자 — 사용자가 직접 말한 금액만 넣는다");
-  const sheets = opt.sheets == null ? null : Number(opt.sheets);
-  if (sheets != null && !(Number.isInteger(sheets) && sheets > 0)) die("--sheets 는 1 이상의 정수(사용자가 승인한 누적 장 수)");
-  if (!opt.note || opt.note === true) die('--note "<사용자가 한 말 그대로, 예: 6.3달러까지 예>" 가 필요하다');
+  if (!opt.note || opt.note === true) die('--note "<사용자가 한 말 그대로, 예: 4장 1.72달러 예>" 가 필요하다');
+  if (opt.cap != null || opt.sheets != null) console.log("- --cap · --sheets: 상한은 없어졌다 — 무시한다(승인 기록만 적는다)");
   const l = ledger(dir);
   const at = new Date().toISOString();
-  if (cap != null) l.cap_usd = cap;
-  if (sheets != null) l.cap_sheets = sheets;
   l.approved_at = at; l.note = String(opt.note);
-  l.approvals = [...(l.approvals ?? []), { at, cap_usd: cap, cap_sheets: sheets, note: String(opt.note) }];
+  l.approvals = [...(l.approvals ?? []), { at, note: String(opt.note) }];
   writeJson(ledgerFile(dir), l);
-  console.log(`ok 상한 ${l.cap_usd} USD${l.cap_sheets != null ? ` · ${l.cap_sheets}장` : ""} (이미 쓴 돈 ${spentUsd(l)}, 쓴 장 ${sheetsUsed(l)}) — 사용자가 승인한 것으로 기록함`);
+  console.log(`ok 승인 기록(${at}) — 이미 쓴 돈 ${spentUsd(l)} USD · ${sheetsUsed(l)}장(장부)`);
 }
 
+// 한 장 그리기 전: 승인 기록이 있는가(격자가 바뀐 뒤라면 그 뒤의 승인이 있는가)만 본다. 금액은 보지 않는다(--usd 를 주어도 쓰지 않는다)
 function cmdCheck() {
-  const usd = opt.usd == null ? config(dir).price_usd : num(opt.usd, "--usd");
-  const r = canSpend(dir, usd);
-  console.log(r.ok ? `ok 남은 돈 ${r.left} USD${r.sheetsLeft != null ? ` · 남은 장 ${r.sheetsLeft}` : ""}` : `멈춤: ${r.reason}. 사용자에게 묻고 approve 로 올린다`);
+  const r = canSpend(dir);
+  console.log(r.ok ? `ok 승인 기록 있음 — 이미 쓴 돈 ${r.spent} USD · ${r.sheets}장(장부)` : `멈춤: ${r.reason}`);
   process.exit(r.ok ? 0 : 1);
 }
 
 // 에이전트(C)가 그리기 직전에 견적 금액으로 적는다. --job 은 그 요청의 idempotency key — 같은 키로 다시 적으면 무시한다(재시도는 한 번만 청구되므로).
 function cmdSpend() {
-  if (!opt.sheet || opt.sheet === true) die("--sheet <장> --usd <금액> [--backend agent|mcp|codex] [--job <id>]");
+  if (!opt.sheet || opt.sheet === true) die("--sheet <장> --usd <금액> [--backend codex|mcp|agent] [--job <id>]");
   const usd = num(opt.usd, "--usd");
   const ids = new Set([...sheetsOf(dir).map((s) => s.id), "drafts"]);
   if (!ids.has(opt.sheet)) die(`모르는 장: ${opt.sheet} (sheets.json 의 장 또는 drafts)`);
   const backend = opt.backend ?? "agent";
-  if (!["agent", "mcp", "codex"].includes(backend)) die("--backend 는 agent · mcp · codex 중 하나");
-  const job = opt.job && opt.job !== true ? String(opt.job) : null;
-  if (job && ledger(dir).spent.some((x) => x.job === job)) { console.log(`이미 기록된 작업 id(${job}) — 다시 적지 않음`); return; }
-  const l = recordSpend(dir, { sheet: opt.sheet, usd, backend, job });
-  console.log(`ok 기록 · 쓴 돈 ${spentUsd(l)}/${l.cap_usd} USD${l.cap_sheets != null ? ` · 쓴 장 ${sheetsUsed(l)}/${l.cap_sheets}` : ""}`);
+  if (!["agent", "mcp", "codex"].includes(backend)) die("--backend 는 codex · mcp · agent 중 하나");
+  // --job 은 묶음(jobs/<장>/job.json)의 key 를 준다 — 도구가 정해 준 키(<작업 폴더 이름>-<장>-g<격자>-<시도>). 다시 받는 장은 시도 번호가 달라 따로 적힌다.
+  //   같은 --job 은 한 번만 적는다(0.5.0 과 같다). --job 을 안 주면 0.5.0 처럼 부를 때마다 적는다 — 덜 적히는 쪽이 위험하다. 그 줄에도 묶음의 key 를 남긴다(치운 그림에 든 돈을 세려고).
+  const bundle = readJson(P(dir, "jobs", opt.sheet, "job.json"), null);
+  const given = opt.job && opt.job !== true ? String(opt.job) : null, job = given ?? bundle?.key ?? null;
+  if (given && ledger(dir).spent.some((x) => x.job === given)) { console.log(`이미 기록된 작업 id(${given}) — 다시 적지 않음`); return; }
+  // 첫 장 잠금: 형식 참조가 없으면 첫 본문 장이 아닌 한국어 장(본문 · 부호 · 다시 쓰기)은 적지 않고 멈춘다 — 적는다는 것은 곧 그린다는 뜻이다. drafts 와 영문 장은 그대로
+  const gate = firstGate(config(dir)), sh = sheetsOf(dir).find((s) => s.id === opt.sheet);
+  if (gate && sh && !isLatinSheet(sh) && sh.id !== gate.first.id) die(`첫 장(${gate.first.id})이 통과하기 전이다 — ${opt.sheet} 는 아직 그리지 않는다(장부에 적지 않았다). ${gate.todo}`);
+  // 승인 기록이 없거나 격자가 바뀐 뒤 새 승인이 없으면 적지 않는다 — 적는다는 것은 곧 그린다는 뜻이다
+  const ok = canSpend(dir);
+  if (!ok.ok) die(`${opt.sheet} 는 적지 않았다 — ${ok.reason}`);
+  const l = recordSpend(dir, { sheet: opt.sheet, usd, backend, job, ...(bundle?.n ? { grid: bundle.n, attempt: bundle.attempt } : {}) });
+  console.log(`ok 기록${job ? `(${job})` : ""} · 쓴 돈 ${spentUsd(l)} USD · ${sheetsUsed(l)}장(장부)`);
 }
 
 // B: OpenAI 이미지 편집 API(참조 그림 여러 장 + 프롬프트). 키는 환경 변수 OPENAI_API_KEY 에서만 읽고 출력하지 않는다.
@@ -415,7 +577,15 @@ async function cmdOpenai() {
   const price = Number(opt.price ?? cfg.price_usd);
   let list = pending(pos).filter((s) => existsSync(P(dir, "jobs", s.id, "prompt.txt")));
   if (!list.length) die("그릴 장이 없다(jobs 를 먼저, 이미 받은 장은 건너뜀)");
-  // 첫 장을 자르고 확인하기 전(format.png 없음)에는 상한이 넉넉해도 한 장만 보낸다 — 첫 장이 틀리면 나머지 돈이 다 버려진다
+  // 첫 장 잠금: 형식 참조가 없으면 첫 본문 장이 아닌 한국어 장은 보내지 않는다(받은 첫 장이 장 검사에 떨어진 채로 둘째 장이 나가지 않게). 영문 장은 그대로
+  const gate = firstGate(cfg), held = gate ? list.filter((s) => !isLatinSheet(s) && s.id !== gate.first.id) : [];
+  if (held.length) {
+    list = list.filter((s) => !held.includes(s));
+    const msg = `첫 장(${gate.first.id})이 통과하기 전이라 ${held.map((s) => s.id).join(" ")} 는 보내지 않는다 — ${gate.todo}`;
+    if (!list.length) die(msg);
+    console.log(msg);
+  }
+  // 첫 장을 자르고 확인하기 전(format.png 없음)에는 승인이 있어도 한 장만 보낸다 — 첫 장이 틀리면 나머지 돈이 다 버려진다
   if (!existsSync(P(dir, "style", "format.png")) && list.length > 1) {
     list = [list.find(isMainSheet) ?? list[0]];
     console.log(`첫 장 확인 전이라 ${list[0].id} 한 장만 보낸다 — cut 으로 자르고 사용자와 본 뒤 jobs → openai 를 다시 돌린다`);
@@ -426,15 +596,17 @@ async function cmdOpenai() {
     console.log(`영문 첫 장 확인 전이라 영문은 ${first.id} 한 장만 보낸다`);
   }
   if (opt["dry-run"]) {
-    for (const s of list) console.log(`[dry-run] ${s.id} · POST https://api.openai.com/v1/images/edits · model ${o.model} · size ${o.size} · quality ${o.quality} · image[] ${readJson(P(dir, "jobs", s.id, "job.json")).refs.join(", ")}`);
+    for (const s of list) { const j = readJson(P(dir, "jobs", s.id, "job.json")); console.log(`[dry-run] ${s.id}${j.attempt > 1 ? `(시도 ${j.attempt})` : ""} · POST https://api.openai.com/v1/images/edits · model ${o.model} · size ${o.size} · quality ${o.quality} · image[] ${j.refs.join(", ")}${j.key ? ` · 장부 키 ${j.key}` : ""}`); }
     console.log(`[dry-run] ${list.length}장 × ${price} USD ≈ ${(list.length * price).toFixed(2)} USD — 아무것도 보내지 않음`);
+    const c = canSpend(dir);
+    if (!c.ok) console.log(`[dry-run] 지금 보내면 멈춘다: ${c.reason}`);
     return;
   }
   const key = process.env.OPENAI_API_KEY;
   if (!key) die("환경 변수 OPENAI_API_KEY 가 없다 — 사용자가 자기 터미널에서 설정한다(값을 대화에 붙이지 않는다)");
   for (const s of list) {
-    const c = canSpend(dir, price);
-    if (!c.ok) die(`${s.id} 전에 멈춤: ${c.reason}. 사용자 승인으로 approve --cap 을 올린 뒤 다시 돌리면 받은 장은 건너뛴다`);
+    const c = canSpend(dir);
+    if (!c.ok) die(`${s.id} 전에 멈춤: ${c.reason}. 승인을 적은 뒤 다시 돌리면 받은 장은 건너뛴다`);
     const job = readJson(P(dir, "jobs", s.id, "job.json"));
     const form = new FormData();
     form.append("model", o.model);
@@ -446,7 +618,8 @@ async function cmdOpenai() {
     // 보내기 전에 장부에 "보냄"을 적는다 — 응답 전에 끊기면 다시 돌릴 때 사람에게 확인받게(두 번 결제 방지)
     const tries = ledger(dir).spent.filter((x) => x.sheet === s.id && x.backend === "openai");
     if (tries.some((x) => x.state === "sent") && !opt.retry) die(`${s.id}: 지난번에 보내고 결과를 못 받았다. 서비스 사용 내역을 확인한 뒤 --retry 로 다시`);
-    recordSpend(dir, { sheet: s.id, usd: price, backend: "openai", state: "sent", model: o.model });
+    // 보낼 때마다 장부에 한 줄 — 다시 받는 장(retry 명령 뒤)은 시도 번호 · 키가 다른 새 줄이 된다
+    recordSpend(dir, { sheet: s.id, usd: price, backend: "openai", state: "sent", model: o.model, ...(job.key ? { job: job.key, grid: job.n, attempt: job.attempt } : {}) });
     const res = await fetch("https://api.openai.com/v1/images/edits", { method: "POST", headers: { Authorization: `Bearer ${key}` }, body: form });
     const body = await res.json().catch(() => ({}));
     const l = ledger(dir);
@@ -460,7 +633,7 @@ async function cmdOpenai() {
     writeFileSync(inboxFile(dir, s.id), Buffer.from(body.data[0].b64_json, "base64"));
     row.state = "done"; row.usage = body.usage ?? null;
     writeJson(ledgerFile(dir), l);
-    console.log(`ok ${s.id} → inbox/${s.id}.png · 쓴 돈(어림) ${spentUsd(l)}/${l.cap_usd} USD`);
+    console.log(`ok ${s.id} → inbox/${s.id}.png · 쓴 돈(어림, 장부) ${spentUsd(l)} USD`);
   }
 }
 
@@ -476,12 +649,219 @@ function linesOf(counts, n = 7) {
   return picked.sort((a, b) => a - b);
 }
 
+// ---- 한국어 모드의 영문 아닌 장(본문 · 부호 · 다시 쓰기, 모든 격자): 장 검사 + 찾은 선대로 자르기. 경고(종료 코드 2)가 있었으면 true
+//   판정 됨 = 예전의 ok · 일부 = 못 쓰는 줄의 칸만 안 쓴다 · 안 됨 = 그 장의 칸은 안 쓴다(선 수가 틀리면 칸을 만들지 않는다)
+//   화면의 첫 낱말과 종료 코드는 다음 할 일(next.action)에 맞춘다: go · redo 면 "ok" / "일부:" + 종료 코드 0, 그 밖(retry · down · ask · stop)이면 "경고:" + 종료 코드 2 — 첫 장의 "일부"도 경고다
+async function cutChecked(sharp, s, file) {
+  const N = gridOfSheet(s), chars = [...s.rows.join("")];
+  if (chars.length !== N * N) die(`${s.id}: 장 목록의 칸이 ${N}×${N} 이 아니다(${chars.length}칸) — sheets.json 의 그 장 줄을 본다`);
+  let raw;
+  try { raw = await sharp(file).removeAlpha().toColourspace("srgb").raw().toBuffer({ resolveWithObject: true }); } catch { die(`${file} 를 그림으로 읽지 못했다 — 원본 PNG(또는 JPG 를 PNG 로 바꾼 것)를 둔다`); }
+  const { data, info } = raw, W = info.width, H = info.height;
+  if (info.channels !== 3) die(`${file} 의 색 채널이 ${info.channels}개다 — RGB 그림(PNG)을 둔다`);
+  const ck = checkSheet({ data, W, H }, N, { symbols: s.kind === "symbols" });
+  const cdir = P(dir, "cells", s.id);
+  rmSync(cdir, { recursive: true, force: true }); // 예전 그림 · 예전 격자의 칸이 남지 않게
+  mkdirSync(cdir, { recursive: true });
+  const badRows = new Set(ck.unusable_rows ?? []), lone = new Set(ck.unusable_cells ?? []), sheetBad = ck.verdict === "안 됨";
+  const emptyLone = new Set(ck.empty_cells ?? []); // 6×6 한글 장: 그 칸만 빠지는 빈 칸 · 거의 빈 칸(줄 판정에 넣지 않는다 — 지시서 10)
+  const cells = [];
+  for (const c of ck.cells) {
+    await sharp(c.g, { raw: { width: c.w, height: c.h, channels: 1 } }).png().toFile(path.join(cdir, `${c.rc}.png`));
+    // skip: 폰트에 쓰지 않는 칸 — "장"(안 된 장) · "줄"(못 쓰는 줄) · "경계"(글자가 선을 넘은 칸)
+    const skip = sheetBad ? "장" : badRows.has(c.r + 1) ? "줄" : lone.has(c.rc) ? "경계" : emptyLone.has(c.rc) && !c.blank ? "빈" : null; // "빈": 거의 빈 칸(옆 글자 조각만 든 칸). 아주 빈 칸은 empty 로 빠진다
+    cells.push({ rc: c.rc, ch: chars[c.r * N + c.c], empty: c.blank, ...(skip ? { skip } : {}) });
+  }
+  const why = (ck.unusable_rows ?? []).map((r) => `${r}행: ${ck.unusable_rows_why[r].join(" / ")}`);
+  // probs(경고): 장 검사 안 됨 · 정사각 아님 · 작음 (+ 아래에서 첫 장의 "일부"). 그 뒤 장의 "일부"와 부호 장의 빈 칸은 경고가 아니라 알림(notes)
+  const probs = [], notes = [];
+  if (sheetBad) probs.push(ck.reason === "선 수 틀림" ? `장 검사 안 됨 — 선 수 틀림: ${ck.reason_detail}. 칸을 만들지 않았다` : `장 검사 안 됨 — ${ck.reason}. 이 장의 칸은 폰트에 쓰지 않는다`);
+  if (Math.abs(W / H - 1) > 0.02) probs.push(`정사각이 아니다(${W}×${H}) — 잘렸거나 다른 비율로 받았다`);
+  if (Math.max(W, H) < 1500) probs.push(`작다(${W}×${H}, 기준 긴 변 1,500px 이상) — 윤곽이 거칠어진다`);
+  if (ck.verdict === "일부") notes.push(`장 검사 일부 — ${ck.reason}. 그 줄의 칸은 폰트에 쓰지 않는다`);
+  for (const w of why) notes.push(w);
+  if (lone.size) notes.push(`글자가 선을 넘은 칸 ${lone.size}개(${[...lone].join(" ")}) — 그 칸은 폰트에 쓰지 않는다(옆 칸 글자가 넘어온 칸일 수도 있다)`);
+  const blank = cells.filter((c) => c.empty);
+  if (s.kind === "symbols" && blank.length) notes.push(`빈 칸 ${blank.length}개(${blank.map((c) => c.rc).join(" ")}) — 그 칸은 빠진다. 같은 부호의 다른 칸을 쓰고, 한 칸도 없으면 redo 가 다시 쓰기 장으로 보낸다`);
+  const sizeProbs = probs.filter((p) => /^(정사각이 아니다|작다)/.test(p));
+  const good = ck.verdict === "됨" && !probs.length && !blank.length && !emptyLone.size; // 형식 참조로 써도 되는 그림(빈 칸 0)
+  const firstCand = isMainSheet(s) && firstMain()?.id === s.id && (!existsSync(P(dir, "style", "format.png")) || readJson(P(dir, "style", "format.json"), null)?.sheet === s.id);
+  if (emptyLone.size) { const list = `빈 칸 ${emptyLone.size}개(${[...emptyLone].join(" ")})`; if (firstCand && ck.verdict === "됨") probs.push(`${list} — 첫 장은 빈 칸이 0 이어야 통과다(형식 참조가 될 수 없다). 6×6 은 그 칸만 빠지고 줄은 쓴다`); else notes.push(`${list} — 6×6 은 그 칸만 빠지고 그 줄의 다른 칸은 쓴다. 그 글자는 redo 가 다시 쓰기 장으로 보낸다`); }
+  const attempt = attemptOf(dir, s.id, N);
+  // 형식 참조(style/format.png): 판정이 "됨"이고 기준(정사각 · 1,500px · 빈 칸 0)에 맞는 첫 본문 장만
+  const fmtPng = P(dir, "style", "format.png"), fmtJson = P(dir, "style", "format.json");
+  const fmtSrc = readJson(fmtJson, null)?.sheet;
+  if (isMainSheet(s)) {
+    if (good && (!existsSync(fmtPng) || fmtSrc === s.id)) { copyFileSync(file, fmtPng); writeJson(fmtJson, { sheet: s.id, at: new Date().toISOString(), n: N }); }
+    else if (!good && fmtSrc === s.id) { unlinkSync(fmtPng); unlinkSync(fmtJson); notes.push(`${s.id} 가 형식 참조였는데 이번 그림이 기준에 안 맞아 style/format.png 를 지웠다`); }
+  }
+  const fmtNow = readJson(fmtJson, null)?.sheet ?? null;
+  const next = nextStep(s, N, ck, sizeProbs, fmtNow, emptyLone.size);
+  // 종료 코드는 다음 할 일에 맞춘다: go(간다) · redo(그대로 가고 못 쓰는 줄만 다시 쓰기)가 아니면 "경고:" + 종료 코드 2. 첫 장의 "일부"도 통과가 아니라 경고다
+  const warn = probs.length > 0 || (next.action !== "go" && next.action !== "redo");
+  if (warn && !probs.length) probs.push(`장 검사 ${ck.verdict} — 첫 장은 "일부"도 통과가 아니다(형식 참조가 될 수 없다)`);
+  writeJson(path.join(cdir, "cells.json"), {
+    sheet: s.id, grid: ck.lines.ok ? "찾음" : "못 찾음(선 수 틀림)", size: [W, H], warnings: probs, cellH: ck.ys ? Math.round((ck.ys[N] - ck.ys[0]) / N) : null, cells,
+    n: N, attempt,
+    check: {
+      rule: "임시 규칙(글씨체 다섯 개 · 장 18개에서 나왔다): 선 N+1 개 · 줄마다 선 자리 15% · 칸마다 글자 하나 · 못 쓰는 줄 20%",
+      verdict: ck.verdict, reason: ck.reason, ...(ck.reason_detail ? { reason_detail: ck.reason_detail } : {}), lines: ck.lines,
+      unusable_rows: ck.unusable_rows, unusable_rows_why: ck.unusable_rows_why ?? null, unusable_cells: ck.unusable_cells ?? [],
+      evenness: ck.evenness ?? null, values: ck.values ?? null, flagged: ck.cells_check ?? null,
+      row_lines: ck.row_lines ? { rows_flagged: ck.row_lines.rows_flagged, cols_flagged: ck.row_lines.cols_flagged, worst_row_off_pct: ck.row_lines.worst_row_off_pct, worst_col_off_pct: ck.row_lines.worst_col_off_pct } : null,
+      xs: ck.xs, ys: ck.ys, notes: ck.notes ?? [],
+    },
+    next,
+  });
+  await reviewPng(sharp, s, cells);
+  const head = warn ? "경고:" : ck.verdict === "일부" ? "일부:" : "ok";
+  console.log(`${head} ${s.id} · ${N}×${N} · 격자 ${ck.lines.ok ? "찾음" : "못 찾음"}(선 ${ck.lines.vertical}/${ck.lines.horizontal}) · ${W}×${H} · 빈 칸 ${blank.length} · 장 검사 ${ck.verdict}${attempt > 1 ? ` · 시도 ${attempt}` : ""}`);
+  for (const p of [...probs, ...notes]) console.log(`  - ${p}`);
+  if (next.action !== "go" || fmtNow === s.id) console.log(`  → 다음: ${next.text}`);
+  return warn;
+}
+// 장 검사 뒤의 다음 할 일(cells.json next 에도 적는다). action: go 간다 · retry 같은 격자로 다시 · down 격자를 낮춘다 · redo 못 쓰는 줄은 다시 쓰기로 · ask 멈추고 묻는다 · stop 더 내려갈 곳이 없다
+//   첫 본문 장(형식 참조가 아직 없음)이 "됨"이 아니면: 처음 떨어지면 한 번 더, 그 격자에서 두 번째로 떨어지면 한 단계 낮춘다(첫 장의 "일부"도 통과가 아니다 — 형식 참조가 될 수 없다). 임시 규칙이다(근거가 되는 장이 없다).
+//   그 뒤의 장: 안 됨 → 다시 받는다, 두 번 안 되면 멈추고 묻는다(격자는 낮추지 않는다). 일부 → 그대로 가고 redo.
+//   "두 번"은 그 장 · 그 격자에서 떨어진 그림의 수로 센다(치운 기록 inbox/rejected/log.json 의 판정 + 지금 그림). 사용자가 글씨가 견본과 달라서 통과한 그림을 치운 것은 세지 않는다 —
+//   시도 번호(치운 그림 수 + 1)와는 다른 수다. 시도 번호는 그림마다 달라야 하는 키에만 쓴다.
+//   첫 본문 장 말고 받은 한국어 장이 있으면(첫 장만 다시 받는 경우) 격자를 낮추라고 하지 않는다 — 떨어지면 다시 받고, 두 번이면 묻는다.
+const pastFails = (id, N) => { const r = rejectedLog(dir).rejected.filter((x) => x.sheet === id && x.grid === N); return { some: r.filter((x) => x.verdict === "일부").length, bad: r.filter((x) => x.verdict === "안 됨").length, blank: r.filter((x) => x.verdict === "됨" && (x.warnings ?? []).some((w) => /^빈 칸/.test(w))).length, size: r.filter((x) => (x.warnings ?? []).some((w) => /^(정사각이 아니다|작다)/.test(w))).length }; };
+//   6×6 의 빈 칸(emptyN — 그 칸만 빠진다): 첫 장이면 판정이 "됨"이어도 통과가 아니다(떨어진 것으로 센다), 그 뒤의 장이면 redo.
+function nextStep(s, N, ck, sizeProbs, fmtNow, emptyN = 0) {
+  const lower = GRIDS.find((g) => g < N), again = `retry <dir> ${s.id} → jobs <dir> ${s.id} → 그리기 → cut <dir> ${s.id}`;
+  const past = pastFails(s.id, N), isFirst = firstMain()?.id === s.id && !fmtNow; // 형식 참조가 아직 없는 첫 본문 장
+  if (ck.verdict === "됨" && !sizeProbs.length && emptyN && !isFirst) return { action: "redo", text: `그대로 간다 — 빈 칸 ${emptyN}개의 글자는 폰트에 쓰지 않고, 장을 다 받은 뒤 redo 가 다시 쓰기 장으로 보낸다` };
+  if (ck.verdict === "됨" && !sizeProbs.length && !(isFirst && emptyN)) return fmtNow === s.id ? { action: "go", text: `첫 장 통과 — 이 격자(${N}×${N})로 간다. 글씨가 견본과 같은지 사용자와 본 뒤 jobs <dir> 로 나머지 장을 묶는다(이제 격자는 못 바꾼다). 글씨가 견본과 다르면 retry <dir> ${s.id} 로 같은 격자에서 다시 받는다` } : { action: "go", text: "그대로 간다" };
+  if (isFirst && (ck.verdict !== "됨" || emptyN)) { // 첫 장은 "일부"도 · 빈 칸이 있는 6×6 "됨"도 통과가 아니다 — 형식 참조가 될 수 없다
+    const fails = past.some + past.bad + past.blank + 1, others = otherKoReceived().map((x) => x.id).join(" ");
+    if (others) return fails < 2 ? { action: "retry", text: `첫 장이 장 검사를 통과하지 못했다(${ck.verdict}) — 같은 격자(${N}×${N})로 다시 받는다: ${again}. 이 격자로 이미 받은 장(${others})이 있어 격자는 낮추지 않는다` }
+      : { action: "ask", text: `첫 장이 이 격자(${N}×${N})에서 두 번 통과하지 못했다 — 멈추고 사용자에게 묻는다: 한 번 더(retry) / 이미 받은 '됨' 본문 장을 형식 참조로 삼는다(cut <dir> <그 장>) / 다른 격자로 하려면 새 작업 폴더 / 그만. 이 격자로 이미 받은 장(${others})이 있어 격자는 낮추지 않는다(한 폰트는 한 격자)` };
+    if (fails < 2) return { action: "retry", text: `첫 장이 장 검사를 통과하지 못했다(${ck.verdict}) — 같은 격자(${N}×${N})로 한 번 더: ${again}. 한 장 값이 더 든다는 것을 사용자에게 한 줄로 알린다` };
+    if (lower) return { action: "down", text: `첫 장이 이 격자(${N}×${N})에서 두 번 통과하지 못했다 — 격자를 한 단계 낮춘다(${N} → ${lower}): grid <dir> --down → 화면의 새 견적을 사용자에게 말하고 승인을 다시 받아 approve --note → jobs <dir> ${s.id} → 그리기 → cut <dir> ${s.id}` };
+    return { action: "stop", text: "6×6 에서도 첫 장이 두 번 통과하지 못했다 — 더 내려갈 격자가 없다. 멈추고 사용자에게 알린다: 견본이나 글씨 설명(--style)을 바꿔야 한다" };
+  }
+  if (ck.verdict === "안 됨") return past.bad + 1 < 2 ? { action: "retry", text: `같은 격자로 다시 받는다: ${again}. 한 장 값이 더 든다는 것을 사용자에게 한 줄로 알린다` } : { action: "ask", text: `같은 장이 두 번 안 됐다 — 멈추고 사용자에게 묻는다: 한 번 더(retry) / 그 장 글자를 다시 쓰기 장으로(그대로 두고 redo) / 그만. 격자는 낮추지 않는다` };
+  if (sizeProbs.length) return past.size + 1 < 2 ? { action: "retry", text: `그림 크기 · 비율이 기준에 안 맞는다(격자 문제가 아니다) — 다시 받는다: ${again}` } : { action: "ask", text: "두 번 받아도 그림 크기 · 비율이 기준에 안 맞는다 — 멈추고 사용자에게 묻는다(그리는 도구의 크기 설정을 본다). 격자는 낮추지 않는다" };
+  return { action: "redo", text: `그대로 간다 — 못 쓰는 줄(${ck.unusable_rows.join(",")}행)의 글자는 폰트에 쓰지 않고, 장을 다 받은 뒤 redo 가 다시 쓰기 장으로 보낸다` };
+}
+
+// ---- 다시 받기: 받은 그림을 inbox/rejected/<장>-g<격자>-<시도>.png 로 치우고 그 장의 칸 · 검수 그림 · 묶음 · 검수 표시를 지운다.
+//   그 뒤 jobs 가 시도 번호와 키(job.json key)를 올려 다시 묶는다 — 키가 달라야 장부에 따로 적히고 서버가 새 그림을 준다.
+//   (openai --retry 는 다른 것이다 — 보내고 응답을 못 받은 요청을 다시 보내는 옵션.)
+const reviewFilesOf = (id) => (existsSync(P(dir, "review")) ? readdirSync(P(dir, "review")).filter((f) => f === `${id}.png` || (f.startsWith(`${id}-p`) && /^-p\d+\.png$/.test(f.slice(id.length)))) : []);
+function rejectSheet(s, why) {
+  const N = gridOfSheet(s), attempt = attemptOf(dir, s.id, N), key = jobKey(dir, s.id, N, attempt), file = `${s.id}-g${N}-${attempt}.png`;
+  const cm = readJson(P(dir, "cells", s.id, "cells.json"), null), ck = cm?.check;
+  mkdirSync(rejectedDir(dir), { recursive: true });
+  renameSync(inboxFile(dir, s.id), path.join(rejectedDir(dir), file));
+  const log = rejectedLog(dir);
+  // verdict · warnings: 치울 때의 장 검사 판정과 경고(자르지 않고 치웠으면 null) — "두 번 떨어지면"은 이 기록으로 센다(nextStep 의 pastFails)
+  log.rejected.push({ sheet: s.id, grid: N, attempt, key, file: `inbox/rejected/${file}`, at: new Date().toISOString(), why, verdict: ck?.verdict ?? null, reason: ck?.reason ?? null, warnings: cm ? cm.warnings ?? [] : null });
+  writeJson(path.join(rejectedDir(dir), "log.json"), log);
+  rmSync(P(dir, "cells", s.id), { recursive: true, force: true });
+  rmSync(P(dir, "jobs", s.id), { recursive: true, force: true });
+  for (const f of reviewFilesOf(s.id)) unlinkSync(P(dir, "review", f));
+  let wasFormat = false;
+  for (const [png, json] of [["format.png", "format.json"], ["latin-format.png", "latin-format.json"]]) if (readJson(P(dir, "style", json), null)?.sheet === s.id) { rmSync(P(dir, "style", png), { force: true }); rmSync(P(dir, "style", json), { force: true }); wasFormat = true; } // 형식 참조였으면 같이 치운다
+  const errors = readJson(P(dir, "errors.json"), {});
+  if (errors[s.id]) { delete errors[s.id]; writeJson(P(dir, "errors.json"), errors); } // 치운 그림에 대한 검수 표시
+  return { N, attempt, file, wasFormat, verdict: ck?.verdict ?? null };
+}
+function cmdRetry() {
+  if (!pos.length) die("retry <dir> <장> … — 치우고 다시 받을 장(예: retry ./my-font s01)");
+  const all = sheetsOf(dir);
+  for (const id of pos) {
+    if (!all.some((x) => x.id === id)) die(`모르는 장: ${id} (sheets.json 의 장)`);
+    if (!existsSync(inboxFile(dir, id))) die(`${id}: 받은 그림(inbox/${id}.png)이 없다 — 치울 것이 없다. 아직 안 받은 장은 jobs 로 묶어 그린다`);
+  }
+  for (const id of pos) {
+    const r = rejectSheet(all.find((x) => x.id === id), "retry");
+    console.log(`ok ${id} 의 그림을 inbox/rejected/${r.file} 로 치웠다(${r.N}×${r.N} · 시도 ${r.attempt}${r.verdict ? ` · 장 검사 ${r.verdict}` : ""}) — 다음은 시도 ${r.attempt + 1}`);
+    if (r.wasFormat) console.log(`  - ${id} 가 형식 참조였다 — style/${isLatinSheet(all.find((x) => x.id === id)) ? "latin-format.png" : "format.png"} 도 같이 치웠다. 이 장이 다시 통과하기 전에는 그 형식 참조를 쓰는 다른 장을 묶거나 그리지 않는다`);
+  }
+  reviewHtml();
+  console.log(`→ jobs <dir> ${pos.join(" ")} 로 다시 묶는다(jobs/<장>/job.json 의 key 가 새 시도 번호로 바뀐다 — 그 키로 spend 하고 그린다). 한 장 값이 더 든다는 것을 사용자에게 한 줄로 알린다(장부에는 그 키로 따로 적힌다)`);
+}
+
+// ---- 격자(한국어 모드): 보기 · 한 단계 낮추기 · 첫 장을 받기 전에 정하기
+//   grid <dir>            지금 격자 · 근거 · 첫 장의 시도 · 치운 그림 · 내려갈 차례
+//   grid <dir> --down     한 단계 낮춘다(14 → 12 → 10 → 8 → 6). 받은 그림을 치우고, 장 목록 · 빈 격자를 새 격자로 다시 만들고, 시도 번호는 새 격자에서 1 부터.
+//                         장 수(값)가 바뀌므로 장부에 적는다 — 새 견적을 말하고 다시 승인(approve --note)받기 전에는 check · spend · openai 가 멈춘다.
+//                         첫 장이 통과한 뒤(형식 참조가 생긴 뒤)와, 첫 본문 장 말고 받은 한국어 장이 있을 때는 못 바꾼다(--set · --auto 도).
+//   grid <dir> --set <N>  첫 장을 받기 전에만: 사용자가 정한다      grid <dir> --auto  첫 장을 받기 전에만: 견본을 다시 재서 정한다
+async function cmdGrid() {
+  const cfg = config(dir);
+  if (!isKo(cfg)) die("grid 는 한국어 모드에서만 쓴다 — 일본어 모드는 6×6 고정이다(한자 · 가나는 작은 칸으로 재 본 적이 없다)");
+  if (cfg.base) die("grid 는 본문을 그리는 작업 폴더에서만 쓴다 — 바탕 글자(--base) 폴더는 영문 장(6×6)만 그린다");
+  const N = gridOfFont(cfg), locked = existsSync(P(dir, "style", "format.png")), first = sheetsOf(dir).find((s) => isMainSheet(s) && !isRedo(s));
+  const nSheets = () => sheetsOf(dir).length;
+  if (!opt.down && opt.set == null && !opt.auto) {
+    const g = cfg.grid, m = g?.measure, rej = rejectedLog(dir).rejected, down = GRIDS.slice(GRIDS.indexOf(N));
+    console.log(`격자 ${N}×${N}${g ? `(${{ auto: "자동", user: "사용자", down: "낮춤", pending: "견본 전" }[g.by] ?? g.by})` : "(격자 정보가 없는 옛 작업 폴더 — 6×6)"}`);
+    if (g) console.log(`- 근거: ${g.why}`);
+    if (m) console.log(`- 견본에서 잰 값: 획 ${m.stroke_px ?? "-"}px ÷ 글자 높이 ${m.glyph_height_px ?? "-"}px = ${m.ratio ?? "못 잼"}${m.class ? ` → ${m.class}` : ""}${m.tilt_deg ? ` · 견본이 ${Math.abs(m.tilt_deg)}° 기울어 있어 되돌려서 쟀다` : ""}${m.error ? ` (${m.error})` : ""} · 경계 ${GRID_BOUND}(임시 규칙 — 글씨체 다섯 개에서 나왔다)`);
+    console.log(`- 장: ${nSheets()}개(본문 ${sheetsOf(dir).filter((s) => isMainSheet(s) && !isRedo(s)).length} · 부호 ${sheetsOf(dir).filter((s) => s.kind === "symbols" && !s.redo).length} · 영문 ${sheetsOf(dir).filter(isLatinSheet).length} · 다시 쓰기 ${sheetsOf(dir).filter(isRedo).length})`);
+    if (first) console.log(`- 첫 장(${first.id}): ${existsSync(inboxFile(dir, first.id)) ? "받음" : "안 받음"} · 지금 시도 ${attemptOf(dir, first.id, gridOfSheet(first))}번째`);
+    if (rej.length) console.log(`- 치운 그림 ${rej.length}장: ${rej.map((x) => `${x.sheet} ${x.grid}×${x.grid} 시도 ${x.attempt}${x.verdict ? `(${x.verdict}${x.reason ? ` — ${x.reason}` : ""})` : ""}`).join(" · ")}`);
+    console.log(`- 내려갈 차례: ${down.length > 1 ? down.join(" → ") : "없음(6×6 이 마지막)"}`);
+    const others = otherKoReceived();
+    console.log(locked ? "- 첫 장이 통과했다(형식 참조 style/format.png) — 격자는 이제 못 바꾼다(한 폰트 한 격자)"
+      : others.length ? `- 첫 장 통과 전이지만 이 격자로 이미 받은 장이 있다(${others.map((s) => s.id).join(" ")}) — 격자는 못 바꾼다(한 폰트 한 격자). 첫 장은 같은 격자로 다시 받는다`
+        : `- 첫 장 통과 전 — 같은 격자에서 장 검사에 두 번 떨어지면 grid <dir> --down${gridStarted() ? "" : " · 받기 전이라 grid <dir> --set <N> 도 된다"}`);
+    if (g?.history?.length > 1) console.log(`- 이력: ${g.history.map((h) => `${h.n}×${h.n}(${h.by})`).join(" → ")}`);
+    for (const line of gridNotes(cfg).filter((x) => !x.startsWith("격자 ") && !x.startsWith("치운 그림"))) console.log(`- ${line}`);
+    return;
+  }
+  if (locked) die(`격자를 바꿀 수 없다 — 첫 장이 이미 통과했다(형식 참조 style/format.png, ${N}×${N}). 한 폰트는 한 격자다`);
+  // 첫 본문 장 말고 받은 한국어 장이 있으면 거절한다 — 통과한 첫 장만 retry 로 치운 뒤(형식 참조가 사라져 위 잠금이 풀린다) --down 을 부르면 돈 주고 받은 장이 모두 치워지기 때문이다
+  const kept = otherKoReceived();
+  if (kept.length) die(`격자를 바꿀 수 없다 — 이 격자(${N}×${N})로 이미 받은 장이 있다(${kept.map((s) => s.id).join(" ")}). 한 폰트는 한 격자다 — 첫 장은 같은 격자로 다시 받는다(retry). 다른 격자로 하려면 새 작업 폴더에서 시작한다`);
+  let d;
+  if (opt.down) {
+    const to = GRIDS[GRIDS.indexOf(N) + 1];
+    if (to == null) die("더 내려갈 격자가 없다(6×6 이 마지막) — 멈추고 사용자에게 알린다: 견본이나 글씨 설명(--style)을 바꿔야 한다");
+    const tries = first ? attemptOf(dir, first.id, N) - (existsSync(inboxFile(dir, first.id)) ? 0 : 1) : 0;
+    d = { n: to, by: "down", why: `${N}×${N} 에서 첫 장이 통과하지 못해(받은 그림 ${tries}장) 한 단계 낮췄다` };
+  } else {
+    if (gridStarted()) die(`${opt.auto ? "--auto" : "--set"} 은 첫 장을 받기 전에만 쓴다 — 받은 뒤에는 grid <dir> --down 으로 한 단계씩 낮춘다`);
+    if (opt.auto) {
+      if (!existsSync(P(dir, "style", "sample.png"))) die("style/sample.png 가 없다 — 견본이 있어야 잰다(init --sample, 또는 drafts → pick)");
+      d = gridDecision(null, await measureSample(await loadSharp(), P(dir, "style", "sample.png")));
+    } else {
+      const to = Number(opt.set);
+      if (!GRIDS.includes(to)) die(`--set 은 ${[...GRIDS].reverse().join(" · ")} 가운데 하나(받은 값: ${opt.set === true ? "없음" : opt.set})`);
+      d = { n: to, by: "user", why: `사용자가 정했다(${to}×${to})` };
+    }
+  }
+  const before = nSheets(), moved = [];
+  for (const s of koSheets()) if (existsSync(inboxFile(dir, s.id))) moved.push(rejectSheet(s, "grid").file); // 받은 그림(첫 장)을 치운다 — 새 격자의 형식 참조로 쓰이지 않게
+  setGrid(cfg, d);
+  writeJson(P(dir, "font.json"), cfg);
+  console.log(`ok 격자 ${N}×${N} → ${d.n}×${d.n}${d.by === "down" ? "(한 단계 낮춤)" : d.by === "user" ? "(사용자)" : "(견본을 다시 잼)"}${moved.length ? ` · 치운 그림 ${moved.map((f) => `inbox/rejected/${f}`).join(" ")}` : ""}`);
+  if (d.by === "auto") console.log(gridLine(cfg));
+  await applyGrid(cfg, N);
+  if (d.n !== N) noteGridChange(N, d.n, before, nSheets());
+  reviewHtml();
+  cmdEstimate({ newQuote: d.n !== N });
+  if (d.n !== N) console.log(`→ 위 새 견적을 사용자에게 말하고 "예"를 받아 approve <dir> --note "<사용자가 한 말>" 로 적은 뒤 jobs <dir>${first ? ` ${first.id}` : ""} → 그리기 → cut`);
+}
+// 장부에 격자 바뀜을 적는다 — 그 뒤의 승인이 없으면 check · spend · openai 가 멈춘다(lib.mjs canSpend)
+function noteGridChange(from, to, sheetsBefore, sheetsAfter) {
+  const l = ledger(dir);
+  l.grid_changes = [...(l.grid_changes ?? []), { at: new Date().toISOString(), from, to, sheets_before: sheetsBefore, sheets_after: sheetsAfter }];
+  writeJson(ledgerFile(dir), l);
+}
+
 async function cmdCut() {
   const sharp = await loadSharp();
+  const cfg0 = config(dir);
   const sheets = sheetsOf(dir).filter((s) => existsSync(inboxFile(dir, s.id)) && (pos.length ? pos.includes(s.id) : opt.all || !existsSync(P(dir, "cells", s.id, "cells.json"))));
   const warned = [];
   for (const s of sheets) {
     const file = inboxFile(dir, s.id);
+    // 한국어 모드의 영문 아닌 장은 장 검사 길로(모든 격자). 영문 장 · 일본어 모드는 아래 예전 길(선 7개 · 1.3 · 6등분) 그대로 — 영문 장은 칸 안에 하늘색 안내선이 있어 선 세기가 달라진다
+    if (isKo(cfg0) && !isLatinSheet(s)) { if (await cutChecked(sharp, s, file)) warned.push(s.id); continue; }
     let raw;
     try { raw = await sharp(file).removeAlpha().raw().toBuffer({ resolveWithObject: true }); } catch { die(`${file} 를 그림으로 읽지 못했다 — 원본 PNG(또는 JPG 를 PNG 로 바꾼 것)를 둔다`); }
     const { data, info } = raw;
@@ -538,49 +918,71 @@ async function cmdCut() {
   }
   reviewHtml();
   if (!sheets.length) console.log("자를 장 없음 — inbox/<장>.png 를 넣는다. 이미 자른 장을 새 그림으로 바꿨으면 cut <dir> <장>");
-  if (warned.length) { console.log(`경고 ${warned.length}장(${warned.join(" ")}) — review/<장>.png 로 보고, 칸이 어긋났거나 흐리면 그 장을 다시 받는다`); process.exitCode = 2; }
+  if (warned.length) { console.log(`경고 ${warned.length}장(${warned.join(" ")}) — 위의 "다음:" 을 따른다(없으면 review/<장>.png 로 보고, 칸이 어긋났거나 흐리면 그 장을 다시 받는다 — retry <dir> <장>)`); process.exitCode = 2; }
 }
 
 // 에이전트가 눈으로 보는 검토 그림: 칸 손글씨 옆에 써야 할 글자를 활자로
+//   6×6 장은 한 장(review/<장>.png, 칸 200px — 0.5.0 과 같은 그림). 격자가 더 크면 6×6 칸씩 쪽을 나눈다(review/<장>-p01.png …, 칸 300px — 작은 칸의 글자를 크게 본다).
+//   장 검사가 못 쓴다고 한 칸(cells.json skip)은 주황 바탕 + 까닭("못 쓰는 줄" · "안 된 장" · "경계 넘음").
+const SKIP_LABEL = { 줄: "못 쓰는 줄(안 씀)", 장: "안 된 장(안 씀)", 경계: "경계 넘음(안 씀)", 빈: "거의 빈 칸(안 씀)" };
 async function reviewPng(sharp, s, cells) {
-  const font = scriptOf(config(dir)).font;
-  const S = 200, G = 6, cw = S + G, comp = [];
-  for (const [k, c] of cells.entries()) {
-    const img = await sharp(P(dir, "cells", s.id, `${c.rc}.png`)).resize(S, S, { fit: "contain", background: "#fff" }).png().toBuffer();
-    comp.push({ input: img, left: (k % 6) * cw + G, top: Math.floor(k / 6) * cw + G + 40 });
+  const font = scriptOf(config(dir)).font, N = gridOfSheet(s);
+  mkdirSync(P(dir, "review"), { recursive: true });
+  for (const f of reviewFilesOf(s.id)) unlinkSync(P(dir, "review", f)); // 예전 그림(쪽 수가 달랐을 수 있다)
+  if (!cells.length) return;
+  // 한 쪽 그리기: list = [{ c(칸), col, row }](쪽 안의 자리), S 칸 그림 크기
+  const draw = async (list, S, title, out) => {
+    const G = 6, cw = S + G, comp = [];
+    for (const { c, col, row } of list) {
+      const img = await sharp(P(dir, "cells", s.id, `${c.rc}.png`)).resize(S, S, { fit: "contain", background: "#fff" }).png().toBuffer();
+      comp.push({ input: img, left: col * cw + G, top: row * cw + G + 40 });
+    }
+    // 빈 칸(잉크가 너무 적어 폰트에서 빠지는 칸)은 빨간 테두리 + "빈 칸" — 흐린 그림에서는 멀쩡해 보여도 빠진다
+    const emptyMarks = list.map(({ c, col, row }) => c.empty ? `<rect x="${col * cw + G + 2}" y="${row * cw + G + 42}" width="${S - 4}" height="${S - 4}" fill="none" stroke="#d0301f" stroke-width="5"/><text x="${col * cw + G + S / 2}" y="${row * cw + G + 40 + S - 10}" text-anchor="middle" font-size="22" fill="#d0301f" font-family="Malgun Gothic, Apple SD Gothic Neo, Noto Sans CJK KR, sans-serif">빈 칸(빠짐)</text>` : "").join("");
+    const skipMarks = list.map(({ c, col, row }) => c.skip && !c.empty ? `<rect x="${col * cw + G + 2}" y="${row * cw + G + 42}" width="${S - 4}" height="${S - 4}" fill="#f59e0b" fill-opacity="0.16" stroke="#d97706" stroke-width="5"/><text x="${col * cw + G + S / 2}" y="${row * cw + G + 40 + S - 10}" text-anchor="middle" font-size="22" fill="#b45309" font-family="Malgun Gothic, Apple SD Gothic Neo, Noto Sans CJK KR, sans-serif">${SKIP_LABEL[c.skip] ?? "안 씀"}</text>` : "").join("");
+    const labels = emptyMarks + skipMarks + list.map(({ c, col, row }) => `<text x="${col * cw + G + S - 6}" y="${row * cw + G + 40 + 38}" text-anchor="end" font-size="34" fill="#1f5fd0" font-family="${font}">${esc(c.ch)}</text><text x="${col * cw + G + 6}" y="${row * cw + G + 40 + S - 8}" font-size="14" fill="#999" font-family="sans-serif">${c.rc}</text>`).join("");
+    const Wt = 6 * cw + G, Ht = 6 * cw + G + 40;
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${Wt}" height="${Ht}"><text x="10" y="28" font-size="22" font-family="sans-serif">${esc(title)}</text>${labels}</svg>`;
+    await sharp({ create: { width: Wt, height: Ht, channels: 3, background: "#fff" } }).composite([...comp, { input: Buffer.from(svg), left: 0, top: 0 }]).png().toFile(P(dir, "review", out));
+  };
+  if (N <= 6) { await draw(cells.map((c, k) => ({ c, col: k % 6, row: Math.floor(k / 6) })), 200, `${s.id} — 파란 글자가 그 칸에 써야 할 글자`, `${s.id}.png`); return; }
+  const per = 6, np = Math.ceil(N / per);
+  for (let pr = 0; pr < np; pr++) for (let pc = 0; pc < np; pc++) {
+    const list = [];
+    for (let r = pr * per; r < Math.min(N, pr * per + per); r++) for (let c = pc * per; c < Math.min(N, pc * per + per); c++) list.push({ c: cells[r * N + c], col: c - pc * per, row: r - pr * per });
+    const p = pr * np + pc + 1;
+    await draw(list, 300, `${s.id} ${p}/${np * np}쪽 · ${pr * per + 1}~${Math.min(N, pr * per + per)}행 · ${pc * per + 1}~${Math.min(N, pc * per + per)}열 — 파란 글자가 그 칸에 써야 할 글자 · 주황 = 장 검사가 안 쓴다고 한 칸`, `${s.id}-p${sid(p)}.png`);
   }
-  // 빈 칸(잉크가 너무 적어 폰트에서 빠지는 칸)은 빨간 테두리 + "빈 칸" — 흐린 그림에서는 멀쩡해 보여도 빠진다
-  const emptyMarks = cells.map((c, k) => c.empty ? `<rect x="${(k % 6) * cw + G + 2}" y="${Math.floor(k / 6) * cw + G + 42}" width="${S - 4}" height="${S - 4}" fill="none" stroke="#d0301f" stroke-width="5"/><text x="${(k % 6) * cw + G + S / 2}" y="${Math.floor(k / 6) * cw + G + 40 + S - 10}" text-anchor="middle" font-size="22" fill="#d0301f" font-family="Malgun Gothic, Apple SD Gothic Neo, Noto Sans CJK KR, sans-serif">빈 칸(빠짐)</text>` : "").join("");
-  const labels = emptyMarks + cells.map((c, k) => `<text x="${(k % 6) * cw + G + S - 6}" y="${Math.floor(k / 6) * cw + G + 40 + 38}" text-anchor="end" font-size="34" fill="#1f5fd0" font-family="${font}">${esc(c.ch)}</text><text x="${(k % 6) * cw + G + 6}" y="${Math.floor(k / 6) * cw + G + 40 + S - 8}" font-size="14" fill="#999" font-family="sans-serif">${c.rc}</text>`).join("");
-  const Wt = 6 * cw + G, Ht = 6 * cw + G + 40;
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${Wt}" height="${Ht}"><text x="10" y="28" font-size="22" font-family="sans-serif">${esc(s.id)} — 파란 글자가 그 칸에 써야 할 글자</text>${labels}</svg>`;
-  await sharp({ create: { width: Wt, height: Ht, channels: 3, background: "#fff" } }).composite([...comp, { input: Buffer.from(svg), left: 0, top: 0 }]).png().toFile(P(dir, "review", `${s.id}.png`));
 }
 
 // 사람이 보는 검토 페이지: 칸을 누르면 "버림", 다른 글자로 쓰였으면 그 글자를 적고, 아래 JSON 을 errors.json 에 붙인다
 function reviewHtml() {
   const errors = readJson(P(dir, "errors.json"), {});
-  const data = sheetsOf(dir).filter((s) => existsSync(P(dir, "cells", s.id, "cells.json"))).map((s) => ({ id: s.id, cells: readJson(P(dir, "cells", s.id, "cells.json")).cells }));
+  // n 격자(열 수) · note 장 검사 판정(있으면) — 못 쓰는 칸(skip)은 주황 점선으로 보인다
+  const data = sheetsOf(dir).filter((s) => existsSync(P(dir, "cells", s.id, "cells.json"))).map((s) => { const m = readJson(P(dir, "cells", s.id, "cells.json")), ck = m.check; return { id: s.id, n: m.n ?? gridOfSheet(s), note: ck ? `${m.n}×${m.n} · 장 검사 ${ck.verdict}${ck.unusable_rows?.length ? ` — 못 쓰는 줄 ${ck.unusable_rows.join(", ")}행(주황, 폰트에 안 쓴다)` : ck.verdict === "안 됨" ? ` — ${ck.reason}(이 장은 안 쓴다)` : ""}` : "", cells: m.cells }; });
   const html = `<!doctype html><html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>칸 검토</title>
 <style>:root{color-scheme:light dark;--bg:#f4f5f7;--card:#fff;--ink:#1b2030;--line:#d8dce4;--blue:#2b67b8;--bad:#c93a2f}
 @media (prefers-color-scheme:dark){:root{--bg:#13161c;--card:#1a1e26;--ink:#e6e8ee;--line:#2e3440;--blue:#86b4ff;--bad:#ff8a80}}
 body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.6 'Malgun Gothic',sans-serif}main{max-width:1320px;margin:0 auto;padding:20px 16px 200px}
-h2{margin:18px 0 6px}.g{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:6px}
+h2{margin:18px 0 6px}h2 small{font-weight:400;font-size:13px;opacity:.75}.g{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:6px;overflow-x:auto}
+.g.big{gap:4px}.g.big .c b{font-size:17px;right:3px;top:0}.g.big .c i{font-size:9px;left:3px;bottom:0}.g.big .c em{font-size:14px;left:3px;top:0}
+.c.skip{border-color:#d97706;border-style:dashed;background:#fdf0d9}.c.skip:after{content:attr(data-skip);position:absolute;left:0;right:0;bottom:12px;text-align:center;color:#b45309;font-size:11px}
 .c{position:relative;background:#fff;border:2px solid var(--line);border-radius:8px;cursor:pointer;aspect-ratio:1}.c img{width:100%;height:100%;object-fit:contain}
 .c b{position:absolute;right:6px;top:2px;font-size:26px;color:#1f5fd0;font-weight:400}.c i{position:absolute;left:6px;bottom:2px;font-size:11px;color:#999;font-style:normal}
 .c.empty{border-color:var(--bad);border-style:dashed}.c.empty:after{content:"빈 칸(빠짐)";position:absolute;left:0;right:0;bottom:16px;text-align:center;color:#d0301f;font-size:12px}.c.bad{border-color:var(--bad);opacity:.45}.c.alt{border-color:#e0a000}.c em{position:absolute;left:6px;top:2px;font-size:20px;color:#b07000;font-style:normal}
 .bar{position:fixed;left:0;right:0;bottom:0;background:var(--card);border-top:1px solid var(--line);padding:10px 16px}textarea{width:100%;height:90px;font:12px Consolas,monospace}</style>
-<main><h1>칸 검토</h1><p>칸을 한 번 누르면 <b>버림</b>(틀림), 두 번 누르면 <b>다른 글자로 씀</b>(실제로 쓴 글자를 입력), 세 번이면 되돌림. 끝나면 아래 JSON 을 작업 폴더 errors.json 에 그대로 저장한다.</p><div id="app"></div></main>
+<main><h1>칸 검토</h1><p>칸을 한 번 누르면 <b>버림</b>(틀림), 두 번 누르면 <b>다른 글자로 씀</b>(실제로 쓴 글자를 입력), 세 번이면 되돌림. 끝나면 아래 JSON 을 작업 폴더의 errors.json(font.json 과 같은 폴더)에 그대로 저장한다 — 직접 저장하거나, 복사해서 에이전트에게 붙여 주면 에이전트가 저장한다. 주황 점선 칸은 장 검사가 못 쓴다고 한 칸(못 쓰는 줄 · 안 된 장 · 경계 넘음)이라 표시하지 않아도 폰트에 쓰지 않는다.</p><div id="app"></div></main>
 <div class="bar"><textarea id="out" readonly></textarea></div>
 <script>const D=${JSON.stringify(data)};const E=${JSON.stringify(errors)};
 const app=document.getElementById("app"),out=document.getElementById("out");
 function sync(){out.value=JSON.stringify(E,null,1)}
-for(const s of D){const h=document.createElement("h2");h.textContent=s.id;app.append(h);const g=document.createElement("div");g.className="g";app.append(g);
-for(const c of s.cells){const d=document.createElement("div");d.className=c.empty?"c empty":"c";d.innerHTML='<img loading="lazy" src="../cells/'+s.id+'/'+c.rc+'.png" alt=""><b></b><i>'+c.rc+'</i><em></em>';d.querySelector("b").textContent=c.ch;
-const paint=()=>{const m=(E[s.id]||{})[c.rc];d.classList.toggle("bad",m==="?");d.classList.toggle("alt",!!m&&m!=="?");d.querySelector("em").textContent=m&&m!=="?"?m:""};
-d.onclick=()=>{E[s.id]=E[s.id]||{};const m=E[s.id][c.rc];if(m===undefined)E[s.id][c.rc]="?";else if(m==="?"){const a=prompt("이 칸에 실제로 쓰인 글자(한 글자):","");if(a&&[...a.trim()].length===1)E[s.id][c.rc]=a.trim();else delete E[s.id][c.rc]}else delete E[s.id][c.rc];if(!Object.keys(E[s.id]).length)delete E[s.id];paint();sync()};paint();g.append(d)}}sync();</script></html>`;
+const SK={"줄":"못 쓰는 줄(안 씀)","장":"안 된 장(안 씀)","경계":"경계 넘음(안 씀)","빈":"거의 빈 칸(안 씀)"};
+for(const s of D){const h=document.createElement("h2");h.textContent=s.id+(E[s.id]==="*"?" — 장 전체 버림(errors.json 에 *)":"");if(s.note){const sm=document.createElement("small");sm.textContent=" "+s.note;h.append(sm)}app.append(h);const g=document.createElement("div");g.className=s.n>6?"g big":"g";if(s.n!==6)g.style.gridTemplateColumns="repeat("+s.n+",minmax("+(s.n>6?"84px":"0")+",1fr))";app.append(g);
+for(const c of s.cells){const d=document.createElement("div");d.className=c.empty?"c empty":c.skip?"c skip":"c";if(c.skip)d.dataset.skip=SK[c.skip]||"안 씀";d.innerHTML='<img loading="lazy" src="../cells/'+s.id+'/'+c.rc+'.png" alt=""><b></b><i>'+c.rc+'</i><em></em>';d.querySelector("b").textContent=c.ch;
+const paint=()=>{const m=E[s.id]==="*"?"?":(E[s.id]||{})[c.rc];d.classList.toggle("bad",m==="?");d.classList.toggle("alt",!!m&&m!=="?");d.querySelector("em").textContent=m&&m!=="?"?m:""};
+d.onclick=()=>{if(E[s.id]==="*")return;E[s.id]=E[s.id]||{};const m=E[s.id][c.rc];if(m===undefined)E[s.id][c.rc]="?";else if(m==="?"){const a=prompt("이 칸에 실제로 쓰인 글자(한 글자):","");if(a&&[...a.trim()].length===1)E[s.id][c.rc]=a.trim();else delete E[s.id][c.rc]}else delete E[s.id][c.rc];if(!Object.keys(E[s.id]).length)delete E[s.id];paint();sync()};paint();g.append(d)}}sync();</script></html>`;
   writeFileSync(P(dir, "review", "index.html"), html, "utf8");
-  console.log(`검토 페이지 review/index.html (장 ${data.length}개) · 에이전트용 그림 review/<장>.png`);
+  console.log(`검토 페이지 review/index.html (장 ${data.length}개) · 에이전트용 그림 review/<장>.png${data.some((s) => s.n > 6) ? "(6×6 보다 큰 격자는 쪽마다 review/<장>-p01.png …)" : ""}`);
 }
 
 function cmdRedo() {
@@ -604,10 +1006,12 @@ function cmdRedo() {
   }
   const n0 = all.sheets.filter(isRedo).length;
   let n = n0;
+  // 다시 쓰기 장(본문 · 부호)은 그 폰트의 본문 격자로(한 폰트 한 격자) — 본문 장의 줄 수, 본문 장이 없으면 font.json 의 격자. 영문 다시 쓰기 장은 6×6
+  const N = all.sheets.find((s) => !isLatinSheet(s) && !isRedo(s))?.rows.length ?? gridOfFont(config(dir)), PER = N * N;
   if (missSym.length) {
-    // 빠진 부호를 36칸에 돌려 채운다(같은 부호를 여러 번 — 가장 나은 칸을 쓴다)
-    const cells = Array.from({ length: 36 }, (_, i) => missSym[i % missSym.length]);
-    all.sheets.push({ id: `r${String(++n).padStart(2, "0")}`, kind: "symbols", redo: true, rows: rowsOf(cells) });
+    // 빠진 부호를 N² 칸(6×6 이면 36칸)에 돌려 채운다(같은 부호를 여러 번 — 가장 나은 칸을 쓴다)
+    const cells = Array.from({ length: PER }, (_, i) => missSym[i % missSym.length]);
+    all.sheets.push({ id: `r${String(++n).padStart(2, "0")}`, kind: "symbols", redo: true, rows: rowsOf(cells, N) });
     console.log(`- 부호 다시 쓰기 1장(r${String(n).padStart(2, "0")}) · 없는 부호 ${missSym.join(" ")}`);
   }
   if (missLat.length) {
@@ -616,40 +1020,49 @@ function cmdRedo() {
     all.sheets.push({ id: `r${String(++n).padStart(2, "0")}`, kind: "latin", redo: true, rows: rowsOf(cells) });
     console.log(`- 영문 다시 쓰기 1장(r${String(n).padStart(2, "0")}) · 없는 글자 ${missLat.join(" ")}`);
   }
-  if (!miss.length) { writeJson(P(dir, "sheets.json"), all); console.log(n > n0 ? "→ jobs 로 묶음을 만든다" : `없는 ${sc.label}·부호가 없다 — redo 필요 없음`); return; }
-  // 한 글자를 두 번 이상: 36칸을 없는 글자로 돌려 채우고, 장마다 섞는다
+  // 다시 쓰기 장도 한 장 값씩 든다 — 그리기 전에 장 수와 값을 사용자에게 말하게 한다
+  // 다시 쓰기 장도 한 장 값씩 든다 — 새 견적으로 장부에 적는다(격자 바뀜처럼, 새 approve 전에는 check · spend · openai 가 멈춘다)
+  const costNote = (k) => {
+    const ids = readJson(P(dir, "sheets.json")).sheets.filter(isRedo).slice(-k).map((s) => s.id), price = Number(config(dir).price_usd), usd = +(k * price).toFixed(2);
+    const l = ledger(dir); l.redo_quotes = [...(l.redo_quotes ?? []), { at: new Date().toISOString(), sheets: ids, price, usd }]; writeJson(ledgerFile(dir), l);
+    console.log(`- 새 견적: 다시 쓰기 ${k}장 × ${price} USD = ${usd} USD — 사용자에게 말하고 승인을 다시 받아 approve --note 로 적기 전에는 check · spend · openai 가 멈춘다`);
+  };
+  if (!miss.length) { writeJson(P(dir, "sheets.json"), all); console.log(n > n0 ? "→ jobs 로 묶음을 만든다" : `없는 ${sc.label}·부호가 없다 — redo 필요 없음`); if (n > n0) costNote(n - n0); return; }
+  // 한 글자를 두 번 이상: N² 칸(6×6 이면 36칸)을 없는 글자로 돌려 채우고, 장마다 섞는다
   let seed = 11 + n;
   const rnd = () => ((seed = (seed * 1103515245 + 12345) >>> 0) / 2 ** 32);
   const shuf = (a) => { a = [...a]; for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(rnd() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
-  const per = Math.max(2, Math.floor(36 / Math.min(36, miss.length)));
+  const per = Math.max(2, Math.floor(PER / Math.min(PER, miss.length)));
   const pool = shuf(miss.flatMap((c) => Array(Math.min(per, 4)).fill(c)));
-  const made = chunk(pool, 36).map((cells, i) => {
-    while (cells.length < 36) cells.push(miss[cells.length % miss.length]);
-    const rows = rowsOf(shuf(cells));
+  const made = chunk(pool, PER).map((cells, i) => {
+    while (cells.length < PER) cells.push(miss[cells.length % miss.length]);
+    const rows = rowsOf(shuf(cells), N);
     // 일본어는 한자가 있으면 활자 구조 참조를 늘 넣는다(자모 풀이 같은 철자 목록이 없어서)
     return { id: `r${String(n + i + 1).padStart(2, "0")}`, kind: "redo", rows, spell: sc.id === "ko", print: !!opt.print || (sc.id === "ja" && [...rows.join("")].some(isKanji)) };
   });
   all.sheets.push(...made);
   writeJson(P(dir, "sheets.json"), all);
-  console.log(`ok 다시 쓰기 ${made.length}장(${made.map((s) => s.id).join(" ")}) · 없는 ${sc.label} ${miss.length}자${made.some((s) => s.print) ? " · 활자 참조(ref-3) 넣음" : ""} → jobs 로 묶음을 만든다`);
+  console.log(`ok 다시 쓰기 ${made.length}장(${made.map((s) => s.id).join(" ")}${N !== 6 ? ` · ${N}×${N}` : ""}) · 없는 ${sc.label} ${miss.length}자${made.some((s) => s.print) ? " · 활자 참조(ref-3) 넣음" : ""} → jobs 로 묶음을 만든다`);
+  costNote(n - n0 + made.length);
 }
 
 // ---- 확대 대조: 칸 손글씨(300px) 아래에 그 장의 활자 참조(ref-3) 칸 — 에이전트 검수에서 획 하나 차이를 볼 때
 //   compare <dir> s12:01 s14:34 …   → review/compare.png (활자 참조가 없는 장은 손글씨만)
 async function cmdCompare() {
   const sharp = await loadSharp();
-  const items = pos.filter((x) => /^[A-Za-z0-9]+:\d\d$/.test(x));
-  if (!items.length) die("compare <dir> <장>:<칸> … (예: compare ./my-font s12:01 s14:34)");
-  const S = 300, m = Math.round(1024 * 0.03), s = (1024 - 2 * m) / 6, comp = [];
+  const items = pos.filter((x) => /^[A-Za-z0-9]+:(\d\d|\d{4})$/.test(x)); // 칸 이름: 격자 10 까지 행열 두 자리("34"), 11 부터 네 자리("0213")
+  if (!items.length) die("compare <dir> <장>:<칸> … (예: compare ./my-font s12:01 s14:34 · 격자 11 이상은 s02:0213)");
+  const S = 300, m = Math.round(1024 * 0.03), comp = [];
   for (const [k, it] of items.entries()) {
     const [sheet, rc] = it.split(":");
+    const s = (1024 - 2 * m) / (sheetsOf(dir).find((x) => x.id === sheet)?.rows.length ?? 6); // 그 장의 격자(활자 참조 ref-3 의 칸 크기)
     const cellPng = P(dir, "cells", sheet, `${rc}.png`);
-    if (!existsSync(cellPng)) die(`${cellPng} 가 없다 — 그 장을 cut 했는지, 칸 자리(행열 두 자리)가 맞는지 본다`);
+    if (!existsSync(cellPng)) die(`${cellPng} 가 없다 — 그 장을 cut 했는지, 칸 자리(행열 — 격자 10 까지 두 자리, 11 부터 네 자리)가 맞는지 본다`);
     const x = (k % 6) * (S + 20), y = Math.floor(k / 6) * (S + 190);
     comp.push({ input: await sharp(cellPng).resize(S, S, { fit: "contain", background: "#fff" }).png().toBuffer(), left: x, top: y });
     const ref3 = P(dir, "jobs", sheet, "ref-3.png");
     if (existsSync(ref3)) {
-      const r = +rc[0], c = +rc[1];
+      const [r, c] = rcParse(rc);
       comp.push({ input: await sharp(ref3).extract({ left: Math.round(m + c * s) + 3, top: Math.round(m + r * s) + 3, width: Math.round(s) - 6, height: Math.round(s) - 6 }).resize(150, 150).png().toBuffer(), left: x + 75, top: y + S + 10 });
     }
   }
@@ -741,17 +1154,31 @@ async function cmdGlyphs() {
   const cellH = med(glyphs.map((g) => g.cell.h));
   const sheetScale = {};
   for (const s of new Set(glyphs.map((g) => g.sheet))) sheetScale[s] = +(cellH / med(glyphs.filter((g) => g.sheet === s).map((g) => g.cell.h))).toFixed(4);
+  // 장마다의 격자(sheetGrid) — build_font.py 가 작은 칸에서 온 글자의 버리는 넓이(MIN_AREA)를 그 격자에 맞춰 줄인다(6×6 은 그대로)
+  const allSheets = sheetsOf(dir), latinIds = new Set(allSheets.filter(isLatinSheet).map((s) => s.id));
+  const sheetGrid = Object.fromEntries(Object.keys(sheetScale).map((s) => [s, allSheets.find((x) => x.id === s)?.rows.length ?? 6]));
+  // 영문이 아닌 장들의 격자가 섞였을 때만(한 폰트 한 격자라 보통은 없다): 칸 그림은 선에서 pad 만큼 안쪽이라 그 몫이 격자마다 다르다 →
+  //   글자가 가장 많은 격자를 기준으로, 다른 격자의 장은 칸 그림 높이가 아니라 선 간격으로 맞춘다. 격자가 하나뿐이면 값은 0.5.0 과 같다.
+  //   (영문 장은 대문자 높이로 따로 맞추므로 본문 14 + 영문 6 은 여기에 들지 않는다.)
+  const bodyIds = Object.keys(sheetScale).filter((s) => !latinIds.has(s)), gridsUsed = [...new Set(bodyIds.map((s) => sheetGrid[s]))];
+  if (gridsUsed.length > 1) {
+    const count = (N) => glyphs.filter((g) => !latinIds.has(g.sheet) && sheetGrid[g.sheet] === N).length, major = [...gridsUsed].sort((a, b) => count(b) - count(a))[0];
+    const pitch = (s) => readJson(P(dir, "cells", s, "cells.json")).cellH * UP, img = (s) => med(glyphs.filter((g) => g.sheet === s).map((g) => g.cell.h));
+    const frac = med(bodyIds.filter((s) => sheetGrid[s] === major).map((s) => img(s) / pitch(s)));
+    for (const s of bodyIds) if (sheetGrid[s] !== major) sheetScale[s] = +(cellH / frac / pitch(s)).toFixed(4);
+    console.log(`경고: 영문이 아닌 장의 격자가 섞여 있다(${gridsUsed.join(" · ")}) — 한 폰트는 한 격자가 원칙이다. 장 배율을 선 간격으로 맞췄지만, 작은 칸일수록 글씨가 상대적으로 굵고 크게 나와 섞으면 티가 난다`);
+  }
   let meta;
   if (cfg.base) {
     // 바탕 글자: 그 폰트의 크기 기준·장 배율을 그대로(장 이름 앞에 base: — 이 폴더의 장 이름과 안 겹치게)
     const b = baseGlyphs(cfg), bdir = path.dirname(cfg.base.glyphs);
-    for (const [k, v] of Object.entries(b.sheetScale)) sheetScale[`base:${k}`] = v;
+    for (const [k, v] of Object.entries(b.sheetScale)) { sheetScale[`base:${k}`] = v; sheetGrid[`base:${k}`] = b.sheetGrid?.[k] ?? 6; }
     const bg = fromBase.map((g) => ({ ...g, file: path.resolve(bdir, g.file), sheet: `base:${g.sheet}`, base: true }));
-    meta = { up: b.up ?? UP, ink: b.ink ?? INK, hangulInkHeightMedian: b.hangulInkHeightMedian, hangulCenterMedian: b.hangulCenterMedian, sheetScale, glyphs: [...bg, ...glyphs] };
+    meta = { up: b.up ?? UP, ink: b.ink ?? INK, hangulInkHeightMedian: b.hangulInkHeightMedian, hangulCenterMedian: b.hangulCenterMedian, sheetScale, sheetGrid, glyphs: [...bg, ...glyphs] };
   } else {
     // 글자 크기 기준: 한글이 적으면(받침 없는 글자만 많은 장 등) 잉크 높이 중앙값이 한쪽으로 쏠린다 → 칸 높이 × 0.69(모두의 둥글펜 2,338자 실측 비율)
     const inkMed = med(han.map((g) => g.ink.y1 - g.ink.y0));
-    meta = { up: UP, ink: INK, hangulInkHeightMedian: han.length >= 300 ? inkMed : Math.round(cellH * 0.69), hangulCenterMedian: +med(han.map((g) => (g.ink.y0 + g.ink.y1) / 2 / g.cell.h)).toFixed(4), sheetScale, glyphs };
+    meta = { up: UP, ink: INK, hangulInkHeightMedian: han.length >= 300 ? inkMed : Math.round(cellH * 0.69), hangulCenterMedian: +med(han.map((g) => (g.ink.y0 + g.ink.y1) / 2 / g.cell.h)).toFixed(4), sheetScale, sheetGrid, glyphs };
   }
   // 영문: 대문자 잉크 높이 중앙값 → 640, 장마다 기준선(그 장 모든 칸의 기준선 글자 아래 끝 중앙값 — 폰트에 안 쓰는 칸도 잰다)
   const lat = glyphs.filter((g) => g.latin);
@@ -765,7 +1192,7 @@ async function cmdGlyphs() {
       const cm = readJson(P(dir, "cells", sid, "cells.json"));
       const ys = [];
       for (const c of cm.cells) {
-        if (c.empty || errors[sid]?.[c.rc] !== undefined || !LATIN_BASELINE.includes(c.ch)) continue;
+        if (c.empty || errors[sid] === "*" || errors[sid]?.[c.rc] !== undefined || !LATIN_BASELINE.includes(c.ch)) continue;
         const { data, info } = await sharp(P(dir, "cells", sid, `${c.rc}.png`)).greyscale().raw().toBuffer({ resolveWithObject: true });
         let maxY = -1;
         for (let p = 0; p < info.width * info.height; p++) if (data[p] < INK) maxY = Math.max(maxY, (p / info.width) | 0);
@@ -844,6 +1271,6 @@ async function cmdBold() {
 }
 
 // KNOWN(맨 위 명령 이름 검사)과 같은 목록이어야 한다
-const CMDS = { init: cmdInit, latin: cmdLatin, drafts: cmdDrafts, pick: cmdPick, plan: () => planSheets(config(dir)), jobs: cmdJobs, status: cmdStatus, estimate: cmdEstimate, approve: cmdApprove, check: cmdCheck, spend: cmdSpend, openai: cmdOpenai, cut: cmdCut, review: reviewHtml, redo: cmdRedo, compare: cmdCompare, preview: cmdPreview, glyphs: cmdGlyphs, bold: cmdBold };
+const CMDS = { init: cmdInit, latin: cmdLatin, drafts: cmdDrafts, pick: cmdPick, grid: cmdGrid, plan: () => planSheets(config(dir)), jobs: cmdJobs, status: cmdStatus, estimate: cmdEstimate, approve: cmdApprove, check: cmdCheck, spend: cmdSpend, openai: cmdOpenai, cut: cmdCut, retry: cmdRetry, review: reviewHtml, redo: cmdRedo, compare: cmdCompare, preview: cmdPreview, glyphs: cmdGlyphs, bold: cmdBold };
 if (!CMDS[cmd]) die(`모르는 명령: ${cmd} (help)`);
 await CMDS[cmd]();

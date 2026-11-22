@@ -39,6 +39,11 @@ SB = {"hangul": 45, "other": 35}
 SPACE, SMOOTH, EPS, MIN_AREA = 300, 3, 0.7, 40
 k = HANGUL_H / meta["hangulInkHeightMedian"]
 center = meta["hangulCenterMedian"]
+# 작은 칸(격자 N > 6)에서 온 글자는 같은 2배 그림이라도 화소가 적다 — 버리는 넓이를 그 장의 격자에 맞춰 줄인다: 40 × (6 ÷ N)².
+#   6×6(과 격자 정보가 없는 옛 glyphs.json)은 40 그대로. 안 줄이면 작은 칸의 마침표 · 말줄임표 점이 사라진다.
+SHEET_GRID = meta.get("sheetGrid", {})
+def min_area(g):
+    return MIN_AREA * (6 / SHEET_GRID.get(g["sheet"], 6)) ** 2
 LAT = meta.get("latin")  # 영문 장이 있을 때만: {cap, k, baseline: {장: 기준선 px(2배 그림 기준)}}
 CAP = LAT["cap"] if LAT else 0
 # 기준선에 붙일 글자(잉크 아래 끝 → 0) · x-높이에 붙일 꼬리 글자(잉크 위 끝 → x-높이). J Q j 와 괄호·쉼표 등은 칸에서 옮긴 자리 그대로.
@@ -179,8 +184,9 @@ def glyph_contours(g):
     x0 = g["ink"]["x0"]
     dy = snap_dy(g)
     res = []
+    drop = min_area(g)
     for loop in loops_of(w, h, rows):
-        if abs(area(loop)) < MIN_AREA: continue
+        if abs(area(loop)) < drop: continue
         pts = dp(smooth(loop, SMOOTH), EPS)
         if len(pts) < 3: continue
         res.append([((x - x0) * scale, fy(y) + dy) for x, y in pts])
