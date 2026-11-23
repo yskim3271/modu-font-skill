@@ -27,10 +27,10 @@ Install: on Windows, right-click the `.ttf` files and choose **Install**; on mac
 | ② | Bundle each sheet: the reference, the sheet format and a prompt listing its characters (196 on a 14×14 sheet) | `jobs` |
 | ③ | An image model writes the sheet. **The first sheet is checked with you before the rest are drawn**, and it becomes the format reference for the others. For Korean the first sheet must also pass the sheet check; if it fails, it is redrawn once at the same grid, then the grid is lowered one step | OpenAI key or the agent's image tool |
 | ④ | Find the light-blue grid, cut the cells and make a review page. For Korean the sheet check runs first (line count, row drift, one character per cell), cells are cut along the found lines, and characters in unusable rows go on correction sheets | `cut` |
-| ⑤ | The agent compares every cell with the character it should be and proposes errors; you confirm them on the page. Wrong characters go on correction sheets | `review` · `redo` |
+| ⑤ | The agent compares every cell with the character it should be and proposes errors; you confirm them on the page. Wrong characters go on correction sheets; stubborn rare Korean syllables can use 6×6 scale-matched rescue sheets (anchor-calibrated to body size), and 1–2 rare repeat-failure glyphs can be human-approved via component override | `review` · `redo` · `override` |
 | ⑥ | Trace the ink into outlines and build the font, then a Bold weight from the same drawings | `glyphs` → `build_font.py` → `bold` |
 
-The model does make mistakes on rare characters (6×6, 2,350 Korean characters: 63 of 1,872 cells wrong on the first try; 14×14, one 500-character font: 3 of 500 wrong on the first try), so the review step is never skipped.
+The model does make mistakes on rare characters (6×6, 2,350 Korean characters: 63 of 1,872 cells wrong on the first try; 14×14, one 500-character font: 3 of 500 wrong on the first try), so the review step is never skipped. Single-stroke differences can be inspected with 4× vowel-band crops (`compare --band`), and prompts are verified against `sheets.json` before and after sending (`verify-prompt`).
 
 ## Modes
 

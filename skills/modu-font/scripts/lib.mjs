@@ -132,6 +132,8 @@ export const SCRIPTS = {
 export const scriptOf = (cfg) => SCRIPTS[cfg?.script ?? "ko"] ?? die(`font.json script 는 ko 또는 ja (받은 값: ${cfg.script})`);
 export const isMainSheet = (s) => s.kind === "hangul" || s.kind === "main";
 export const isLatinSheet = (s) => s.kind === "latin";
+// 6×6 스케일-매칭 구제 장(0.7.0 — redo --rescue, pNN). 다시 쓰기 장(rNN)처럼 plan 을 다시 돌려도 남고, 글자는 보정 그림(calibrated/<장>/)으로 쓴다
+export const isRescue = (s) => s.kind === "rescue";
 
 function promptJa(sheet, cfg, { format = "sheet", print = false } = {}) {
   const style = cfg.style_text, pr = kindOf(cfg) === "print"; // 활자(지시서 14)
@@ -243,7 +245,7 @@ export function canSpend(dir) {
   if (gc && gc.at > l.approved_at) return { ...base, ok: false, reason: `격자가 바뀌었다(${gc.from}×${gc.from} → ${gc.to}×${gc.to}, 장 ${gc.sheets_before} → ${gc.sheets_after}) — 새 견적(estimate)을 사용자에게 말하고 승인을 다시 받는다(approve --note)` };
   // 다시 쓰기 장이 생기면(redo) 그 장 값도 새 견적이다 — 말하고 다시 승인받기 전에는 멈춘다(지시서 12). 같은 장 다시 받기(retry)는 막지 않는다
   const rq = l.redo_quotes?.at(-1);
-  if (rq && rq.at > l.approved_at) return { ...base, ok: false, reason: `다시 쓰기 장이 생겼다(${rq.sheets.join(" ")} — ${rq.sheets.length}장 × ${rq.price} = ${rq.usd} USD) — 이 새 견적을 사용자에게 말하고 승인을 다시 받는다(approve --note)` };
+  if (rq && rq.at > l.approved_at) return { ...base, ok: false, reason: `${rq.rescue ? "6×6 구제 장(redo --rescue)" : "다시 쓰기 장"}이 생겼다(${rq.sheets.join(" ")} — ${rq.sheets.length}장 × ${rq.price} = ${rq.usd} USD) — 이 새 견적을 사용자에게 말하고 승인을 다시 받는다(approve --note)` };
   return { ...base, ok: true };
 }
 export function recordSpend(dir, row) {
