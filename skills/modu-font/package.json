@@ -1,6 +1,6 @@
 {
   "name": "modu-font-skill",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "private": true,
   "description": "Agent skill: turn the lettering style in one reference image into a Korean, Japanese and Latin TrueType font with an image-generation model, cell by cell.",
   "type": "module",
