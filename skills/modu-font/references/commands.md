@@ -8,9 +8,9 @@
   init <dir> --script ja [--family-ja "わたしの手書き"] [--chars 한자.txt | --set jis1|jis12] [--count <한자 수>] [--kana no] …   일본어(references/japanese.md)
   init <dir> … --latin [--base <glyphs.json> [--base-bold <glyphs-bold.json>]]   영문 3장 더하기 · 다른 폴더에서 만든 글자 그림을 바탕으로(references/latin.md)
   latin <dir> [--from <다른 작업 폴더>] [--force]   이미 있는 작업 폴더에 영문 3장(L1~L3, 늘 6×6)을 더한다 · --from 이면 그 폴더에서 받은 영문 장·검수를 옮긴다
-  drafts <dir> [--set hand|print] [--style "<설명>"]   AI 시안 4개(2×2)를 그릴 묶음 jobs/drafts — 받은 그림은 inbox/drafts.png
-                                --set: 손글씨 네 가지(hand) · 활자 네 가지(print — 명조 둘 · 고딕 둘), 기본 = font.json 의 kind. --style 이면 그 설명을 네 갈래(그대로 · 가늘게 · 굵게 · 좁고 각지게)로
-  drafts <dir> --base a.png[,b.png] [--set …]   이미 있는 견본(다른 글자 체계도)과 같은 글씨로 이 폰트의 견본 한 장 — 받은 뒤 pick --whole
+  drafts <dir> [--set hand|print] [--style "<설명>"] [--lines "줄1|줄2|…"]   AI 시안 4개(2×2)를 그릴 묶음 jobs/drafts — 받은 그림은 inbox/drafts.png
+                                --set: 손글씨 네 가지(hand) · 활자 네 가지(print — 명조 둘 · 고딕 둘), 기본 = font.json 의 kind. --style 이면 그 설명을 네 갈래(그대로 · 가늘게 · 굵게 · 좁고 각지게)로. --lines 를 안 주면 초성 19·중성 21·종성 23을 고루 담은 중립 구조형 5줄(hand · print 공통)
+  drafts <dir> --base a.png[,b.png] [--set …] [--lines "줄1|줄2|…"]   이미 있는 견본(다른 글자 체계도)과 같은 글씨로 이 폰트의 견본 한 장(한국어 기본 6줄 — 위 5줄 + 숫자·부호) — 받은 뒤 pick --whole
   pick <dir> --quad 1~4 | --whole [--style "..."]   시안 사분면(또는 통째로)을 style/sample.png 로 — 격자가 아직 안 정해졌으면 이 견본을 재서 정한다. --quad 는 그 시안 묶음의 설명을 style 로, 묶음의 종류를 kind 로 적는다
   grid <dir>                    한국어 모드의 격자: 지금 격자 · 근거(견본에서 잰 값) · 첫 장의 시도 · 치운 그림 · 내려갈 차례
   grid <dir> --down [--price X]   한 단계 낮춘다(14 → 12 → 10 → 8 → 6): 받은 첫 장을 inbox/rejected/ 로 치우고 장 목록 · 빈 격자를 새 격자로 다시 만든다.
