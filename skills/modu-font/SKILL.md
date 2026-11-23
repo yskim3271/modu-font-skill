@@ -4,7 +4,7 @@ description: Make a Korean (Hangul) or Japanese (kana + kanji) TrueType font —
 license: MIT
 compatibility: Node 18.17+ with sharp (npm install in this folder) and Python 3 with fontTools (pip install -r requirements.txt). Needs ONE paid way to generate images — an OpenAI API key, or the host agent's own image tool / an image MCP server.
 metadata:
-  version: "0.7.1"
+  version: "0.7.2"
 ---
 
 # 모두의 폰트 스킬 (modu-font) — 참고 이미지 한 장의 글씨체로 폰트 만들기
@@ -51,7 +51,7 @@ init(견본 → 격자) → (drafts → pick) → jobs → estimate → approve 
 
 1. `init <dir> --sample 견본.png [--kind print] --family-en "My Hand" --family-ko "내 손글씨" --style "<글씨 설명(영어)>" --count 500`
    - `--kind`: `hand`(손글씨, 기본) · `print`(활자). 프롬프트가 손글씨면 "같은 사람이 같은 펜으로", 활자면 "같은 활자(같은 폰트 파일에서 찍은 것처럼) · 되풀이되는 글자는 칸마다 똑같이"로 쓴다. 바꾸려면 `style <dir> --kind …` → `jobs` 다시(이미 받은 장은 옛 문구로 그려졌다).
-   - 견본이 없으면 `init <dir>` → `drafts <dir>`(글씨 종류의 시안 네 가지 — 다른 종류는 `--set hand|print`) → 그림을 `inbox/drafts.png` 로 받기 → `pick <dir> --quad 1~4`(그 시안 묶음의 설명과 종류가 `font.json` 에 적힌다).
+   - 견본이 없으면 `init <dir>` → `drafts <dir>`(글씨 종류의 시안 네 가지 — 다른 종류는 `--set hand|print`, 문구 지정은 `--lines "줄1|줄2|…"`, 기본은 초성·중성·종성을 고루 담은 중립 구조형 5줄) → 그림을 `inbox/drafts.png` 로 받기 → `pick <dir> --quad 1~4`(그 시안 묶음의 설명과 종류가 `font.json` 에 적힌다).
    - `--style` 은 견본 글씨를 영어로 한 줄(손글씨 예: "round, bubbly everyday handwriting with a thin black 0.5 mm gel pen (soft curves, big round ㅇ, chubby short letters)" · 활자 예: "modern Myeongjo serif type: crisp clean edges, moderate stroke contrast, small sharp serifs"). 프롬프트에 그대로 들어간다 — 활자면 "not handwriting" 같은 말은 넣지 않아도 된다(종류가 말한다).
    - **격자는 견본이 정해질 때 잰다**: `init --sample` 때, 견본 없이 만들었으면 `pick` 때, 견본을 손으로 `style/sample.png` 에 넣었으면 다음 `jobs` 때(첫 장을 받기 전에는 `grid <dir> --auto` 로 다시 잴 수 있다). 견본에서 획 굵기와 글자 높이를 재서 `획 ÷ 높이 < 0.09 → 14×14(가는 글씨)`, `그 이상 → 12×12(굵은 글씨)`. 견본이 기울어 있으면(±12° 안) 글줄이 수평이 되게 되돌려서 잰다(`style/sample.png` 는 그대로 둔다). 화면에 `격자 14×14 — 견본의 획 굵기 ÷ 글자 높이 0.0602(획 8.3px ÷ 높이 138px) < 0.09 → 가는 글씨 → 14×14` 처럼 나오고 `font.json` 의 `grid` 에 남는다 — **이 한 줄과 장 수를 사용자에게 말한다.** 견본을 재지 못하면(글자 줄을 못 찾음 등) 12×12 로 두고 그렇게 알린다(굵은 글씨면 첫 장 검사가 10×10 으로 낮춘다 — 정하려면 `init --grid <N>` · `grid <dir> --set <N>`). 언제든 `grid <dir>` 로 지금 격자·근거·내려갈 차례를 본다.
 2. `jobs <dir>` — 안 받은 장마다 묶음(`ref-1.png` 견본, `ref-2.png` 형식, `prompt.txt`, `job.json`). **첫 장이 통과하기 전에는 첫 한글 장(s01) 하나만 묶는다.** `--all` 은 묶음만 미리 만드는 것이다 — 그래도 첫 장 통과 전에는 첫 장만 그린다. 첫 장을 받았는데 통과하지 못한 채로 부르면 `jobs` 는 다른 한국어 장을 묶지 않고 멈추며 먼저 할 일을 말한다.

@@ -73,7 +73,19 @@ const DRAFT_STYLES = [
   ["3", "a quick scribbled memo: letters lean right, strokes connect, loose and fast but still legible"],
   ["4", "small sharp mechanical-pencil handwriting: thin grey-black strokes, compact angular letters"],
 ];
-const DRAFT_LINES = ["야, 이거 큰일 났다", "ㅋㅋㅋ 진짜?? 다 매진?", "아키바까지 가야 되나…", "진짜 엄청 달렸어!"];
+// 한국어 시안 기본 문구(0.7.2 — hand · print 공통 중립 구조형 5줄: 초성 19/19 · 중성 21/21 · 종성 23/27 · 모임꼴 6/6)
+const DRAFT_LINES = [
+  "다람쥐 헌 쳇바퀴에 타고파",
+  "닭 값 삶 흙 여덟 앉아 많네 싫어",
+  "꽃 부엌 숲 낮 끝 옷 밖 있다 걷다 좋아",
+  "빵 떡 쓰레기 짜장 깡통 국밥 냄새",
+  "왜 웬 의 얘 예 봐 뭐 최 표 휴, 하얀 별!",
+];
+// 한국어 한 장 견본(--base) 기본 문구: 위 5줄 + 숫자·기본 부호
+const DRAFT_LINES_BASE = [
+  ...DRAFT_LINES,
+  "0 1 2 3 4 5 6 7 8 9 , . ? ! … ~",
+];
 // 활자 시안(지시서 14 — drafts --set print): 명조 둘 · 고딕 둘. 활자를 원하는 사용자는 먼저 명조와 고딕 사이에서 갈리므로 한 장에 두 갈래를 다 보인다.
 //   명조 둘은 지휘 세션이 직접 써서 잘 나온 시안(work/jrpg-myeongjo — 고전 책 명조 · 현대 명조)을 바탕으로 했다.
 const DRAFT_STYLES_PRINT = [
@@ -82,8 +94,8 @@ const DRAFT_STYLES_PRINT = [
   ["3", "clean modern Gothic (Dotum) sans-serif type: even stroke weight, no serifs, open shapes, like screen and interface text"],
   ["4", "bold headline Gothic sans-serif type: heavy even strokes, square solid shapes, no serifs, like a poster or game title"],
 ];
-// 활자 시안 문장 — 받침이 다양하다(ㄺ ㄼ ㅆ ㄹ ㅁ ㅇ …). 지휘 세션의 시안에서 네 칸 모두 틀림 없이 나온 문장
-const DRAFT_LINES_PRINT = ["크리스털의 빛이 꺼져 간다", "붉은 달 아래, 늑대가 울었다", "흙과 바람이 남긴 낡은 검", "왕국의 기사여, 일어나라!"];
+const numWord = (n) => ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine"][n] ?? String(n);
+const capFirst = (s) => s.charAt(0).toUpperCase() + s.slice(1);
 // drafts --style "<설명>": 그 설명을 네 갈래로 변주한다(hand · print 같은 규칙)
 const draftVariants = (desc) => [
   ["1", `${desc} — exactly as described`],
@@ -357,6 +369,9 @@ async function cmdDrafts() {
   const cfg0 = config(dir), set = opt.set == null ? kindOf(cfg0) : String(opt.set);
   if (!KINDS.includes(set)) die(`--set 은 hand(손글씨 시안) 또는 print(활자 시안) (받은 값: ${opt.set === true ? "없음" : opt.set})`);
   if (opt.style === true) die('--style 다음에 영어 설명이 필요하다(그 설명을 네 갈래로 변주한다)');
+  if (opt.lines === true) die('--lines 다음에 "|" 로 나눈 문장이 필요하다(예: --lines "줄1|줄2|줄3|줄4")');
+  const customLines = opt.lines != null ? String(opt.lines).split("|").map((s) => s.trim()).filter(Boolean) : null;
+  if (customLines && !customLines.length) die('--lines 에 비어 있지 않은 문장이 하나 이상 필요하다');
   const pr = set === "print";
   // --base a.png[,b.png]: 이미 있는 견본(다른 글자 체계라도)을 참조로, 같은 글씨로 이 폰트의 글자를 쓴 견본 한 장 — 받은 그림은 pick --whole
   if (opt.base && opt.base !== true) {
@@ -366,23 +381,24 @@ async function cmdDrafts() {
     const sharp = await loadSharp();
     const refs = [];
     for (const [i, f] of bases.entries()) { await sharp(f).png().toFile(path.join(d, `ref-${i + 1}.png`)); refs.push(`ref-${i + 1}.png`); }
-    const lines = ja ? DRAFT_LINES_JA : pr ? DRAFT_LINES_PRINT : DRAFT_LINES;
+    const lines = customLines ?? (ja ? DRAFT_LINES_JA : DRAFT_LINES_BASE);
+    const nw = numWord(lines.length), Nw = capFirst(nw), lnUnit = lines.length === 1 ? "line" : "lines";
     const text = pr ? [
       `${refs.length > 1 ? `References 1-${refs.length} are` : "Reference 1 is"} a lettering sample in one printed typeface${ja ? " (in Korean)" : ""}: ${cfg.style_text}.`,
       `Draw a lettering sample page in the SAME typeface: the same stroke weight, contrast, serifs, proportions and slant, as if set from the same font family${ja ? ", now setting Japanese (hiragana, katakana and kanji) in that same typeface" : ""}.`,
-      "A square sheet of plain white paper seen flat from directly above like a clean scan. Four lines of text set in this typeface, large, legible and centered, one sentence per line, with generous margins.",
-      `Write each sentence exactly as given, every character and punctuation mark unchanged${ja ? " (Japanese kanji forms, every stroke correct)" : ""}:`,
+      `A square sheet of plain white paper seen flat from directly above like a clean scan. ${Nw} ${lnUnit} of text set in this typeface, large, legible and centered, one line per row, with generous margins.`,
+      `Write each line exactly as given, every character and punctuation mark unchanged${ja ? " (Japanese kanji forms, every stroke correct)" : ""}:`,
       ...lines.map((l, i) => `${i + 1}. ${l}`),
       "It must look like professionally typeset printed type: perfectly straight baseline, consistent letterforms, the same character identical every time, crisp clean edges.",
-      "Black ink only on white paper. No color, no grid, no ruled lines, no drawings, no labels, no text other than the four sentences.",
+      `Black ink only on white paper. No color, no grid, no ruled lines, no drawings, no labels, no text other than the ${nw} ${lnUnit}.`,
     ].join("\n") : [
       `${refs.length > 1 ? `References 1-${refs.length} are` : "Reference 1 is"} handwriting by one person${ja ? " (in Korean)" : ""}: ${cfg.style_text}.`,
       `Write a handwriting sample page by the SAME person with the SAME pen: the same stroke weight, roundness, proportions and slant, as if written on the same day${ja ? ", now writing Japanese (hiragana, katakana and kanji) in that same hand" : ""}.`,
-      "A square sheet of plain white paper seen flat from directly above like a clean scan. Four lines of handwriting, large, legible and centered, one sentence per line, with generous margins.",
-      `Write each sentence exactly as given, every character and punctuation mark unchanged${ja ? " (Japanese kanji forms, every stroke correct)" : ""}:`,
+      `A square sheet of plain white paper seen flat from directly above like a clean scan. ${Nw} ${lnUnit} of handwriting, large, legible and centered, one line per row, with generous margins.`,
+      `Write each line exactly as given, every character and punctuation mark unchanged${ja ? " (Japanese kanji forms, every stroke correct)" : ""}:`,
       ...lines.map((l, i) => `${i + 1}. ${l}`),
       "It must look handwritten by a real person, not a typeface: slightly uneven baseline, natural variation in size, the same character never identical twice.",
-      "Black ink only on white paper. No color, no grid, no ruled lines, no drawings, no labels, no text other than the four sentences.",
+      `Black ink only on white paper. No color, no grid, no ruled lines, no drawings, no labels, no text other than the ${nw} ${lnUnit}.`,
     ].join("\n");
     writeFileSync(path.join(d, "prompt.txt"), text + "\n", "utf8");
     writeJson(path.join(d, "job.json"), { id: "drafts", kind: "sample", set, refs, out: "inbox/drafts.png", lines, size: "정사각, 긴 변 1500px 이상" });
@@ -390,24 +406,25 @@ async function cmdDrafts() {
     return;
   }
   const styles = opt.style != null ? draftVariants(String(opt.style)) : pr ? DRAFT_STYLES_PRINT : DRAFT_STYLES;
-  const lines = pr ? DRAFT_LINES_PRINT : DRAFT_LINES;
+  const lines = customLines ?? DRAFT_LINES;
+  const nw = numWord(lines.length), lnUnit = lines.length === 1 ? "line" : "lines";
   const text = [
     "A square sheet of plain white paper, seen flat from directly above like a clean scan, divided into four equal quadrants (2x2) by thin light-grey lines.",
-    pr ? "Each quadrant is a lettering sample of the SAME four Korean sentences, set in printed type on four lines, large, legible and centered, with generous margins."
-      : "Each quadrant is a handwriting sample of the SAME four Korean sentences, written by hand on four lines, large, legible and centered, with generous margins.",
-    "Write each sentence exactly as given, every Hangul character and punctuation mark unchanged, one sentence per line:",
+    pr ? `Each quadrant is a lettering sample of the SAME ${nw} Korean ${lnUnit}, set in printed type on ${nw} ${lnUnit}, large, legible and centered, with generous margins.`
+      : `Each quadrant is a handwriting sample of the SAME ${nw} Korean ${lnUnit}, written by hand on ${nw} ${lnUnit}, large, legible and centered, with generous margins.`,
+    "Write each line exactly as given, every Hangul character and punctuation mark unchanged, one line per row:",
     ...lines.map((l, i) => `${i + 1}. ${l}`),
     pr ? "It must look like professionally typeset printed type: perfectly straight baseline, consistent letterforms, the same letter identical every time, crisp clean edges."
       : "It must look handwritten by a real person, not a typeface: slightly uneven baseline, natural variation in letter size and stroke, the same letter never identical twice.",
-    pr ? "Black only on white paper. No color, no drawings, no ruled lines, no text other than the sentences and the labels below."
-      : "Black or dark grey only on white paper. No color, no drawings, no ruled lines, no text other than the sentences and the labels below.",
+    pr ? "Black only on white paper. No color, no drawings, no ruled lines, no text other than the lines and the labels below."
+      : "Black or dark grey only on white paper. No color, no drawings, no ruled lines, no text other than the lines and the labels below.",
     "In the top-left corner of each quadrant, a small grey label with its number. The four quadrants differ only in the letter shapes:",
     ...styles.map(([n, s], i) => `- ${n} (${["top-left", "top-right", "bottom-left", "bottom-right"][i]}): ${s}.`),
   ].join("\n");
   writeFileSync(path.join(d, "prompt.txt"), text + "\n", "utf8");
   // set 은 hand 일 때 적지 않는다(0.6.0 의 job.json 과 같게) — pick --quad 는 없으면 hand 로 읽는다
-  writeJson(path.join(d, "job.json"), { id: "drafts", ...(pr ? { set } : {}), refs: [], out: "inbox/drafts.png", styles: Object.fromEntries(styles) });
-  console.log(`ok jobs/drafts/prompt.txt (${pr ? "활자" : "손글씨"} 시안 네 가지${opt.style != null ? " — --style 을 네 갈래로" : ""}) — 그림을 inbox/drafts.png 로 받은 뒤 pick --quad 1~4`);
+  writeJson(path.join(d, "job.json"), { id: "drafts", ...(pr ? { set } : {}), refs: [], out: "inbox/drafts.png", lines, styles: Object.fromEntries(styles) });
+  console.log(`ok jobs/drafts/prompt.txt (${pr ? "활자" : "손글씨"} 시안 네 가지${opt.style != null ? " — --style 을 네 갈래로" : ""}${customLines ? ` · --lines ${lines.length}줄` : ""}) — 그림을 inbox/drafts.png 로 받은 뒤 pick --quad 1~4`);
 }
 
 async function cmdPick() {
@@ -1421,7 +1438,12 @@ function cmdPreview() {
   const reg = files.find((f) => f.endsWith("-Regular.ttf")), bold = files.find((f) => f.endsWith("-Bold.ttf"));
   if (!reg) die("out/<이름>-Regular.ttf 가 없다 — glyphs → build_font.py 를 먼저");
   const SAMPLE_JA = ["「ねえ、これ大変なことになった！」", "「マジで？？全部売り切れ…」", "「ちょっと待って、本当に？」", "「コーヒー、飲みに行こうよ〜」", "「えっ……今、なんて？」", "「ありがとう♡また明日ね。」"];
-  const SAMPLE_KO = ["야, 이거 큰일 났다!", "ㅋㅋㅋ 진짜?? 다 매진?", "아키바까지 가야 되나…", "「진짜 엄청 달렸어!」"];
+  const SAMPLE_KO = [
+    "다람쥐 헌 쳇바퀴에 타고파.",
+    "닭 값 삶 흙 여덟 앉아 많네 싫어 — 꽃 부엌 숲 낮 끝 옷 밖!",
+    "왜 웬 의 얘 예 봐 뭐 최 표 휴, 하얀 별빛 아래 바람이 분다…",
+    "「맑은 하늘, 푸른 바다」 0123456789 (100%)",
+  ];
   const SAMPLE_EN = ["The quick brown fox jumps over the lazy dog.", "Hello! Coffee & cake @ 3:30? “Yes,” she said — (really).", "AVATAR Toyota WAVE · fjord Ty, Yo, P.S. #42 $9.99 50% [ok] {x} a/b"];
   const lines = opt.text && opt.text !== true ? String(opt.text).split("|") : [...(ja ? SAMPLE_JA : SAMPLE_KO), ...(cfg.latin ? SAMPLE_EN : [])];
   const body = lines.map(esc).join("<br>");
